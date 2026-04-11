@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF Linker Studio (Persistent)</title>
+    <title>PDF Linker Studio (Persistent State)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- PDF.js -->
@@ -119,7 +119,7 @@
             <i class="fa-solid fa-file-pdf text-red-500 text-2xl"></i>
             <div>
                 <h1 class="text-xl font-bold text-gray-800 leading-tight">PDF Linker Studio</h1>
-                <p class="text-[10px] text-green-600 font-medium"><i class="fa-solid fa-check-circle"></i> Auto-Save Enabled</p>
+                <p class="text-[10px] text-green-600 font-medium"><i class="fa-solid fa-check-circle"></i> Session Restored</p>
             </div>
         </div>
         
@@ -159,7 +159,6 @@
             </div>
             
             <div id="doc-list" class="flex-1 overflow-y-auto p-2 space-y-2">
-                <!-- Document Items will be injected here -->
                 <div id="loading-spinner" class="hidden flex flex-col items-center justify-center mt-10">
                     <div class="spinner mb-2"></div>
                     <span class="text-xs text-gray-500">Restoring Session...</span>
@@ -246,7 +245,7 @@
     <script>
         // --- IndexedDB Persistence Layer ---
         const DB_NAME = 'PDFLinkerStudioDB';
-        const DB_VERSION = 1;
+        const DB_VERSION = 2; // Incremented version to update schema
         let db;
 
         async function initDB() {
@@ -259,6 +258,10 @@
                     }
                     if (!db.objectStoreNames.contains('links')) {
                         db.createObjectStore('links', { keyPath: 'id' });
+                    }
+                    // NEW: Store for view state (page numbers, active docs)
+                    if (!db.objectStoreNames.contains('settings')) {
+                        db.createObjectStore('settings', { keyPath: 'id' });
                     }
                 };
                 request.onsuccess = (e) => {
@@ -289,11 +292,24 @@
             });
         }
 
+        // NEW: Save current view state
+        async function saveSettings() {
+            if (!db) return;
+            const settings = {
+                id: 'appState',
+                view: state.view,
+                mode: state.mode
+            };
+            const tx = db.transaction(['settings'], 'readwrite');
+            tx.objectStore('settings').put(settings);
+        }
+
         async function clearDB() {
             return new Promise((resolve, reject) => {
-                const tx = db.transaction(['documents', 'links'], 'readwrite');
+                const tx = db.transaction(['documents', 'links', 'settings'], 'readwrite');
                 tx.objectStore('documents').clear();
                 tx.objectStore('links').clear();
+                tx.objectStore('settings').clear();
                 tx.oncomplete = () => resolve();
                 tx.onerror = () => reject(tx.error);
             });
@@ -301,14 +317,16 @@
 
         async function loadStateFromDB() {
             return new Promise((resolve, reject) => {
-                const result = { documents: [], links: [] };
-                const tx = db.transaction(['documents', 'links'], 'readonly');
+                const result = { documents: [], links: [], settings: null };
+                const tx = db.transaction(['documents', 'links', 'settings'], 'readonly');
                 
                 const docStore = tx.objectStore('documents');
                 const linkStore = tx.objectStore('links');
+                const settingsStore = tx.objectStore('settings');
 
                 docStore.getAll().onsuccess = (e) => result.documents = e.target.result;
                 linkStore.getAll().onsuccess = (e) => result.links = e.target.result;
+                settingsStore.get('appState').onsuccess = (e) => result.settings = e.target.result;
 
                 tx.oncomplete = () => resolve(result);
                 tx.onerror = () => reject(tx.error);
@@ -361,11 +379,10 @@
         };
 
         async function init() {
-            // 1. Initialize Database
             try {
                 await initDB();
                 
-                // 2. Load existing data
+                // 1. Load all data (Docs, Links, Settings)
                 const savedData = await loadStateFromDB();
                 
                 if (savedData.documents.length > 0 || savedData.links.length > 0) {
@@ -378,29 +395,39 @@
                     // Restore Documents
                     for (const dbDoc of savedData.documents) {
                         try {
-                            // Convert stored Blob back to ArrayBuffer for PDF.js
                             const arrayBuffer = await dbDoc.fileBlob.arrayBuffer();
                             const loadingTask = pdfjsLib.getDocument(arrayBuffer);
                             const pdfDoc = await loadingTask.promise;
 
                             state.documents[dbDoc.id] = {
                                 id: dbDoc.id,
-                                file: dbDoc.fileBlob, // Keep blob for potential re-saving
+                                file: dbDoc.fileBlob, 
                                 pdfDoc: pdfDoc,
                                 name: dbDoc.name,
                                 pageCount: dbDoc.pageCount,
                                 thumbnail: dbDoc.thumbnail
                             };
-
-                            // Auto-assign views if empty
-                            if (!state.view.left.docId) setActiveDocument('left', dbDoc.id, false);
-                            else if (!state.view.right.docId) setActiveDocument('right', dbDoc.id, false);
-
                         } catch (err) {
                             console.error("Failed to restore doc:", dbDoc.name, err);
                         }
                     }
-                    
+
+                    // 2. Restore View State (Documents & Page Numbers)
+                    if (savedData.settings) {
+                        const sView = savedData.settings.view;
+                        // Only restore if the document actually exists in our current loaded set
+                        if (sView.left.docId && state.documents[sView.left.docId]) {
+                            state.view.left = { ...sView.left, scale: 1.0 }; // Reset scale just in case
+                        }
+                        if (sView.right.docId && state.documents[sView.right.docId]) {
+                            state.view.right = { ...sView.right, scale: 1.0 };
+                        }
+                        // Restore Mode
+                        if (savedData.settings.mode) {
+                            setMode(savedData.settings.mode, false); // false = don't save while loading
+                        }
+                    }
+
                     renderDocList();
                     // Trigger render for views
                     if (state.view.left.docId) renderPage('left');
@@ -411,7 +438,6 @@
 
             } catch (err) {
                 console.error("DB Init failed:", err);
-                showModal("Database Error", "Could not load saved session.");
             }
 
             // Setup Listeners
@@ -428,11 +454,10 @@
             if (confirm("Are you sure? This will delete all uploaded PDFs and links permanently.")) {
                 try {
                     await clearDB();
-                    // Reset State
                     state.documents = {};
                     state.links = [];
-                    state.view.left.docId = null;
-                    state.view.right.docId = null;
+                    state.view.left = { docId: null, pageNum: 1, scale: 1.0 };
+                    state.view.right = { docId: null, pageNum: 1, scale: 1.0 };
                     renderDocList();
                     renderPage('left');
                     renderPage('right');
@@ -455,7 +480,6 @@
                     const loadingTask = pdfjsLib.getDocument(arrayBuffer);
                     const pdfDoc = await loadingTask.promise;
 
-                    // Generate thumbnail
                     const page = await pdfDoc.getPage(1);
                     const viewport = page.getViewport({ scale: 0.2 }); 
                     const canvas = document.createElement('canvas');
@@ -476,15 +500,16 @@
 
                     state.documents[id] = docObj;
 
-                    // Persist to DB
                     await saveDocumentToDB({
                         id: docObj.id,
                         name: docObj.name,
                         pageCount: docObj.pageCount,
                         thumbnail: docObj.thumbnail,
-                        fileBlob: file // Store the raw file object
+                        fileBlob: file 
                     });
 
+                    // Auto-assign if view is empty, but DON'T reset page if settings loaded it
+                    // Note: setActiveDocument resets page to 1.
                     if (!state.view.left.docId) setActiveDocument('left', id);
                     else if (!state.view.right.docId) setActiveDocument('right', id);
 
@@ -548,7 +573,12 @@
 
         function setActiveDocument(side, docId, render = true) {
             state.view[side].docId = docId;
+            // Only reset to page 1 if it's a manual selection change, not a restore.
+            // Since we overwrite the whole view object in init(), this explicit reset to 1 is fine here.
             state.view[side].pageNum = 1; 
+            
+            saveSettings(); // Save the new document selection
+            
             if (render) {
                 renderPage(side);
                 renderDocList();
@@ -608,6 +638,7 @@
 
             if (newPage >= 1 && newPage <= doc.pageCount) {
                 viewState.pageNum = newPage;
+                saveSettings(); // Save the new page number
                 renderPage(side);
             }
         }
@@ -646,7 +677,6 @@
                 
                 btn.innerHTML = '<i class="fa-solid fa-link"></i>';
 
-                // Highlight logic
                 if (state.highlightRequest && 
                     state.highlightRequest.side === side && 
                     state.highlightRequest.linkId === link.id) {
@@ -687,13 +717,17 @@
             state.highlightRequest = { side: otherSide, linkId: link.id };
             state.view[otherSide].docId = targetData.docId;
             state.view[otherSide].pageNum = targetData.page;
+            
+            saveSettings(); // Save the new view state after jumping
             renderPage(otherSide);
         }
 
         // --- Interaction / Drawing Logic ---
 
-        function setMode(mode) {
+        function setMode(mode, save = true) {
             state.mode = mode;
+            if (save) saveSettings(); // Persist mode preference
+
             document.body.className = mode === 'drawing' ? 'bg-gray-100 h-screen flex flex-col overflow-hidden text-gray-800 font-sans drawing-mode' : 'bg-gray-100 h-screen flex flex-col overflow-hidden text-gray-800 font-sans';
 
             if (mode === 'navigation') {
@@ -706,7 +740,8 @@
                 els.modeDrawBtn.classList.add('bg-white', 'shadow-sm');
                 els.modeNavBtn.classList.replace('text-gray-800', 'text-gray-500');
                 els.modeNavBtn.classList.remove('bg-white', 'shadow-sm');
-                showModal("Link Mode", "Click and drag from one document to another to create a link.");
+                // Don't show modal on init
+                if(save) showModal("Link Mode", "Click and drag from one document to another to create a link.");
             }
         }
 
@@ -804,10 +839,7 @@
                      };
                      
                      state.links.push(newLink);
-                     
-                     // Persist Link to DB
                      await saveLinkToDB(newLink);
-
                      validLink = true;
                      
                      renderMarkersForView(state.drawing.startSide);
@@ -880,7 +912,6 @@
                     
                     if (!project.links || !project.documents) throw new Error("Invalid format");
 
-                    // Merge links (save to DB)
                     project.links.forEach(async link => {
                         state.links.push(link);
                         await saveLinkToDB(link);
@@ -893,7 +924,6 @@
                     
                     showModal("Project Imported", msg);
                     
-                    // Note: We do NOT clear documents here, just add links. User can then upload files.
                     renderMarkersForView('left');
                     renderMarkersForView('right');
 
@@ -916,7 +946,6 @@
             els.modal.classList.add('hidden');
         }
 
-        // Start
         init();
 
     </script>

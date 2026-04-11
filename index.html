@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF Linker Studio (Persistent State & Scroll)</title>
+    <title>PDF Linker Studio (Annotations)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- PDF.js -->
@@ -32,6 +32,21 @@
         .pdf-canvas {
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
             transition: transform 0.2s;
+        }
+
+        /* Annotation Canvas Layer */
+        .annotation-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 55; /* Above PDF, Below Markers */
+            pointer-events: none; /* Disabled by default */
+            cursor: crosshair;
+        }
+        
+        /* Enable pointer events when in annotation mode */
+        body.annotation-mode .annotation-canvas {
+            pointer-events: auto;
         }
 
         /* Link Button Marker */
@@ -75,18 +90,18 @@
             animation: markerPulse 2s infinite;
         }
 
-        /* Drawing Layer */
+        /* Drawing Layer (For Links) */
         #drawing-layer {
             pointer-events: none; 
         }
-        body.drawing-mode #drawing-layer {
+        body.linking-mode #drawing-layer {
             pointer-events: auto;
             cursor: crosshair;
         }
-        body.drawing-mode .pdf-canvas-container {
+        body.linking-mode .pdf-canvas-container {
             cursor: crosshair;
         }
-        body.drawing-mode .link-marker {
+        body.linking-mode .link-marker {
             pointer-events: none; 
             opacity: 0.5;
         }
@@ -123,21 +138,37 @@
             </div>
         </div>
         
-        <div class="flex items-center gap-4">
+        <div class="flex items-center gap-2">
+            <!-- Mode Switcher -->
             <div class="flex bg-gray-100 rounded-lg p-1">
-                <button id="mode-nav-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-white shadow-sm text-gray-800 transition-all" onclick="setMode('navigation')">
-                    <i class="fa-solid fa-arrow-pointer mr-2"></i>Navigate
+                <button id="mode-nav-btn" class="px-3 py-1.5 rounded-md text-sm font-medium bg-white shadow-sm text-gray-800 transition-all" onclick="setAppMode('navigation')" title="Navigate Mode">
+                    <i class="fa-solid fa-arrow-pointer"></i>
                 </button>
-                <button id="mode-draw-btn" class="px-4 py-1.5 rounded-md text-sm font-medium text-gray-500 hover:text-gray-700 transition-all" onclick="setMode('drawing')">
-                    <i class="fa-solid fa-pen-nib mr-2"></i>Draw Link
+                <button id="mode-link-btn" class="px-3 py-1.5 rounded-md text-sm font-medium text-gray-500 hover:text-gray-700 transition-all" onclick="setAppMode('linking')" title="Draw Link Mode">
+                    <i class="fa-solid fa-link"></i>
+                </button>
+                <button id="mode-anno-btn" class="px-3 py-1.5 rounded-md text-sm font-medium text-gray-500 hover:text-gray-700 transition-all" onclick="setAppMode('annotation')" title="Annotation Mode">
+                    <i class="fa-solid fa-pen"></i>
                 </button>
             </div>
-            <div class="h-8 w-px bg-gray-300"></div>
+
+            <!-- Annotation Sub-Tools (Visible only in Annotation Mode) -->
+            <div id="anno-tools" class="hidden flex bg-gray-100 rounded-lg p-1 border-l border-gray-200 pl-2">
+                <button id="tool-pen" class="px-3 py-1.5 rounded-md text-sm font-medium bg-blue-100 text-blue-700 transition-all" onclick="setAnnoTool('pen')">
+                    <i class="fa-solid fa-pen-nib mr-1"></i> Pen
+                </button>
+                <button id="tool-eraser" class="px-3 py-1.5 rounded-md text-sm font-medium text-gray-500 hover:text-gray-700 transition-all" onclick="setAnnoTool('eraser')">
+                    <i class="fa-solid fa-eraser mr-1"></i> Eraser
+                </button>
+            </div>
+
+            <div class="h-8 w-px bg-gray-300 mx-2"></div>
+            
             <button onclick="exportProject()" class="text-gray-600 hover:text-blue-600 font-medium text-sm flex items-center gap-2">
-                <i class="fa-solid fa-download"></i> Save Project
+                <i class="fa-solid fa-download"></i> Save
             </button>
             <label class="text-gray-600 hover:text-blue-600 font-medium text-sm flex items-center gap-2 cursor-pointer">
-                <i class="fa-solid fa-upload"></i> Open Project
+                <i class="fa-solid fa-upload"></i> Load
                 <input type="file" id="import-project-input" class="hidden" accept=".json">
             </label>
         </div>
@@ -173,14 +204,6 @@
                 <button onclick="clearAllData()" class="w-full py-2 text-xs font-bold text-red-600 border border-red-200 rounded bg-red-50 hover:bg-red-100 transition-colors">
                     <i class="fa-solid fa-trash mr-1"></i> Clear All Data
                 </button>
-                <div class="mt-3 text-xs text-gray-500">
-                    <p class="font-semibold mb-1">How to use:</p>
-                    <ul class="list-disc pl-4 space-y-1">
-                        <li>Import 2+ PDFs.</li>
-                        <li>Switch to <b>Draw Link</b>.</li>
-                        <li>Drag between docs to link.</li>
-                    </ul>
-                </div>
             </div>
         </aside>
 
@@ -200,6 +223,8 @@
                 <div class="flex-1 overflow-auto relative flex justify-center p-4 bg-gray-500/10 pdf-canvas-container" id="left-viewport">
                     <div id="left-canvas-wrapper" class="relative shadow-lg">
                         <canvas id="left-canvas" class="pdf-canvas bg-white block"></canvas>
+                        <!-- NEW: Annotation Canvas -->
+                        <canvas id="left-anno-canvas" class="annotation-canvas"></canvas>
                         <div id="left-markers-layer" class="absolute inset-0 pointer-events-none"></div>
                     </div>
                 </div>
@@ -218,12 +243,14 @@
                 <div class="flex-1 overflow-auto relative flex justify-center p-4 bg-gray-500/10 pdf-canvas-container" id="right-viewport">
                     <div id="right-canvas-wrapper" class="relative shadow-lg">
                         <canvas id="right-canvas" class="pdf-canvas bg-white block"></canvas>
+                        <!-- NEW: Annotation Canvas -->
+                        <canvas id="right-anno-canvas" class="annotation-canvas"></canvas>
                         <div id="right-markers-layer" class="absolute inset-0 pointer-events-none"></div>
                     </div>
                 </div>
             </div>
 
-            <!-- SVG Drawing Overlay -->
+            <!-- SVG Drawing Overlay (For Links) -->
             <svg id="drawing-layer" class="absolute inset-0 w-full h-full z-40 overflow-visible">
                 <path id="current-draw-path" d="" fill="none" stroke="#ef4444" stroke-width="2" stroke-dasharray="5,5" style="display:none;"></path>
             </svg>
@@ -255,7 +282,7 @@
 
         // --- IndexedDB Persistence Layer ---
         const DB_NAME = 'PDFLinkerStudioDB';
-        const DB_VERSION = 2; 
+        const DB_VERSION = 3; // Incremented for Annotations
         let db;
 
         async function initDB() {
@@ -271,6 +298,10 @@
                     }
                     if (!db.objectStoreNames.contains('settings')) {
                         db.createObjectStore('settings', { keyPath: 'id' });
+                    }
+                    // NEW: Store for annotations
+                    if (!db.objectStoreNames.contains('annotations')) {
+                        db.createObjectStore('annotations', { keyPath: 'docId' });
                     }
                 };
                 request.onsuccess = (e) => {
@@ -301,12 +332,24 @@
             });
         }
 
+        // NEW: Save annotations for a specific doc
+        async function saveAnnotationsToDB(docId, data) {
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(['annotations'], 'readwrite');
+                const store = tx.objectStore('annotations');
+                store.put({ docId, data });
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
         async function saveSettings() {
             if (!db) return;
             const settings = {
                 id: 'appState',
                 view: state.view,
-                mode: state.mode
+                appMode: state.appMode,
+                annoTool: state.annoTool
             };
             const tx = db.transaction(['settings'], 'readwrite');
             tx.objectStore('settings').put(settings);
@@ -314,10 +357,11 @@
 
         async function clearDB() {
             return new Promise((resolve, reject) => {
-                const tx = db.transaction(['documents', 'links', 'settings'], 'readwrite');
+                const tx = db.transaction(['documents', 'links', 'settings', 'annotations'], 'readwrite');
                 tx.objectStore('documents').clear();
                 tx.objectStore('links').clear();
                 tx.objectStore('settings').clear();
+                tx.objectStore('annotations').clear();
                 tx.oncomplete = () => resolve();
                 tx.onerror = () => reject(tx.error);
             });
@@ -325,16 +369,24 @@
 
         async function loadStateFromDB() {
             return new Promise((resolve, reject) => {
-                const result = { documents: [], links: [], settings: null };
-                const tx = db.transaction(['documents', 'links', 'settings'], 'readonly');
+                const result = { documents: [], links: [], settings: null, annotations: {} };
+                const tx = db.transaction(['documents', 'links', 'settings', 'annotations'], 'readonly');
                 
                 const docStore = tx.objectStore('documents');
                 const linkStore = tx.objectStore('links');
                 const settingsStore = tx.objectStore('settings');
+                const annoStore = tx.objectStore('annotations');
 
                 docStore.getAll().onsuccess = (e) => result.documents = e.target.result;
                 linkStore.getAll().onsuccess = (e) => result.links = e.target.result;
                 settingsStore.get('appState').onsuccess = (e) => result.settings = e.target.result;
+                
+                // Load all annotations
+                annoStore.getAll().onsuccess = (e) => {
+                    e.target.result.forEach(item => {
+                        result.annotations[item.docId] = item.data;
+                    });
+                };
 
                 tx.oncomplete = () => resolve(result);
                 tx.onerror = () => reject(tx.error);
@@ -349,7 +401,11 @@
                 right: { docId: null, pageNum: 1, scale: 1.0, scrollTop: 0 }
             },
             links: [], 
-            mode: 'navigation', 
+            // New State
+            appMode: 'navigation', // 'navigation', 'linking', 'annotation'
+            annoTool: 'pen', // 'pen', 'eraser'
+            annotations: {}, // { docId: { pageNum: [ strokes ] } }
+            
             drawing: {
                 active: false,
                 startSide: null, 
@@ -368,6 +424,8 @@
             loadingSpinner: document.getElementById('loading-spinner'),
             leftCanvas: document.getElementById('left-canvas'),
             rightCanvas: document.getElementById('right-canvas'),
+            leftAnnoCanvas: document.getElementById('left-anno-canvas'),
+            rightAnnoCanvas: document.getElementById('right-anno-canvas'),
             leftWrapper: document.getElementById('left-canvas-wrapper'),
             rightWrapper: document.getElementById('right-canvas-wrapper'),
             leftViewport: document.getElementById('left-viewport'),
@@ -375,7 +433,11 @@
             drawingLayer: document.getElementById('drawing-layer'),
             currentPath: document.getElementById('current-draw-path'),
             modeNavBtn: document.getElementById('mode-nav-btn'),
-            modeDrawBtn: document.getElementById('mode-draw-btn'),
+            modeLinkBtn: document.getElementById('mode-link-btn'),
+            modeAnnoBtn: document.getElementById('mode-anno-btn'),
+            annoTools: document.getElementById('anno-tools'),
+            toolPen: document.getElementById('tool-pen'),
+            toolEraser: document.getElementById('tool-eraser'),
             importInput: document.getElementById('import-project-input'),
             modal: document.getElementById('modal'),
             modalTitle: document.getElementById('modal-title'),
@@ -389,19 +451,14 @@
         // --- Scroll Handlers (Debounced) ---
         const handleScroll = debounce((side) => {
             const viewport = els[side + 'Viewport'];
-            // Update state
             state.view[side].scrollTop = viewport.scrollTop;
-            // Save to DB
             saveSettings();
-            // Re-render markers (existing logic to update positions if needed, though markers are relative to wrapper so usually not strictly needed on scroll unless there's parallax)
-            // Actually, we keep the existing logic just in case
             renderMarkersForView(side);
         }, 200);
 
         async function init() {
             try {
                 await initDB();
-                
                 const savedData = await loadStateFromDB();
                 
                 if (savedData.documents.length > 0 || savedData.links.length > 0) {
@@ -409,6 +466,7 @@
                     els.emptyMsg.style.display = 'none';
                     
                     state.links = savedData.links;
+                    state.annotations = savedData.annotations || {};
 
                     for (const dbDoc of savedData.documents) {
                         try {
@@ -429,19 +487,16 @@
                         }
                     }
 
-                    // Restore View State (Docs, Pages, AND Scroll)
                     if (savedData.settings) {
                         const sView = savedData.settings.view;
                         if (sView.left.docId && state.documents[sView.left.docId]) {
-                            // Ensure scrollTop has a default value if missing in old DB
                             state.view.left = { ...sView.left, scale: 1.0, scrollTop: sView.left.scrollTop || 0 };
                         }
                         if (sView.right.docId && state.documents[sView.right.docId]) {
                             state.view.right = { ...sView.right, scale: 1.0, scrollTop: sView.right.scrollTop || 0 };
                         }
-                        if (savedData.settings.mode) {
-                            setMode(savedData.settings.mode, false); 
-                        }
+                        if (savedData.settings.appMode) setAppMode(savedData.settings.appMode, false);
+                        if (savedData.settings.annoTool) setAnnoTool(savedData.settings.annoTool, false);
                     }
 
                     renderDocList();
@@ -461,17 +516,67 @@
             window.addEventListener('mousemove', handleMouseMove);
             window.addEventListener('mouseup', handleMouseUp);
             
-            // Attach Scroll Listeners
             els.leftViewport.addEventListener('scroll', () => handleScroll('left'));
             els.rightViewport.addEventListener('scroll', () => handleScroll('right'));
         }
 
+        // --- Mode Switching ---
+        function setAppMode(mode, save = true) {
+            state.appMode = mode;
+            if (save) saveSettings();
+
+            // Reset Body Classes
+            document.body.classList.remove('linking-mode', 'annotation-mode');
+
+            // Reset Button Styles
+            [els.modeNavBtn, els.modeLinkBtn, els.modeAnnoBtn].forEach(btn => {
+                btn.classList.remove('bg-white', 'shadow-sm', 'text-gray-800');
+                btn.classList.add('text-gray-500');
+            });
+            els.annoTools.classList.add('hidden');
+
+            // Apply Active State
+            if (mode === 'navigation') {
+                els.modeNavBtn.classList.add('bg-white', 'shadow-sm', 'text-gray-800');
+                els.modeNavBtn.classList.remove('text-gray-500');
+            } else if (mode === 'linking') {
+                document.body.classList.add('linking-mode');
+                els.modeLinkBtn.classList.add('bg-white', 'shadow-sm', 'text-gray-800');
+                els.modeLinkBtn.classList.remove('text-gray-500');
+                if(save) showModal("Link Mode", "Click and drag from one document to another to create a link.");
+            } else if (mode === 'annotation') {
+                document.body.classList.add('annotation-mode');
+                els.modeAnnoBtn.classList.add('bg-white', 'shadow-sm', 'text-gray-800');
+                els.modeAnnoBtn.classList.remove('text-gray-500');
+                els.annoTools.classList.remove('hidden');
+                setAnnoTool(state.annoTool, false); // Update sub-tools UI
+            }
+        }
+
+        function setAnnoTool(tool, save = true) {
+            state.annoTool = tool;
+            if (save) saveSettings();
+
+            if (tool === 'pen') {
+                els.toolPen.classList.add('bg-blue-100', 'text-blue-700');
+                els.toolPen.classList.remove('text-gray-500');
+                els.toolEraser.classList.remove('bg-blue-100', 'text-blue-700');
+                els.toolEraser.classList.add('text-gray-500');
+            } else {
+                els.toolEraser.classList.add('bg-blue-100', 'text-blue-700');
+                els.toolEraser.classList.remove('text-gray-500');
+                els.toolPen.classList.remove('bg-blue-100', 'text-blue-700');
+                els.toolPen.classList.add('text-gray-500');
+            }
+        }
+
         async function clearAllData() {
-            if (confirm("Are you sure? This will delete all uploaded PDFs and links permanently.")) {
+            if (confirm("Are you sure? This will delete all uploaded PDFs, links, and annotations permanently.")) {
                 try {
                     await clearDB();
                     state.documents = {};
                     state.links = [];
+                    state.annotations = {};
                     state.view.left = { docId: null, pageNum: 1, scale: 1.0, scrollTop: 0 };
                     state.view.right = { docId: null, pageNum: 1, scale: 1.0, scrollTop: 0 };
                     renderDocList();
@@ -588,10 +693,8 @@
         function setActiveDocument(side, docId, render = true) {
             state.view[side].docId = docId;
             state.view[side].pageNum = 1;
-            state.view[side].scrollTop = 0; // Reset scroll on new doc
-            
+            state.view[side].scrollTop = 0; 
             saveSettings(); 
-            
             if (render) {
                 renderPage(side);
                 renderDocList();
@@ -603,10 +706,14 @@
             const docId = viewState.docId;
             const canvas = els[side + 'Canvas'];
             const ctx = canvas.getContext('2d');
+            const annoCanvas = els[side + 'AnnoCanvas'];
+            const annoCtx = annoCanvas.getContext('2d');
 
             if (!docId || !state.documents[docId]) {
                 canvas.width = 0;
                 canvas.height = 0;
+                annoCanvas.width = 0;
+                annoCanvas.height = 0;
                 els[side + 'Title'].innerText = 'None';
                 els[side + 'PageInd'].innerText = '-- / --';
                 document.getElementById(side + '-markers-layer').innerHTML = '';
@@ -622,27 +729,33 @@
                 const page = await doc.pdfDoc.getPage(viewState.pageNum);
                 const viewport = page.getViewport({ scale: 1.5 }); 
 
+                // Resize PDF Canvas
                 canvas.width = viewport.width;
                 canvas.height = viewport.height;
+                
+                // Resize Annotation Canvas
+                annoCanvas.width = viewport.width;
+                annoCanvas.height = viewport.height;
 
                 const wrapper = els[side + 'Wrapper'];
                 wrapper.style.width = `${viewport.width}px`;
                 wrapper.style.height = `${viewport.height}px`;
 
+                // Render PDF
                 const renderContext = {
                     canvasContext: ctx,
                     viewport: viewport
                 };
                 await page.render(renderContext).promise;
 
-                // Restore Scroll Position (CRITICAL FIX)
-                // We use setTimeout to ensure the DOM has updated with the new canvas size before setting scroll
+                // Restore Scroll Position
                 const viewportEl = els[side + 'Viewport'];
                 if (viewState.scrollTop) {
                     viewportEl.scrollTop = viewState.scrollTop;
                 }
 
                 renderMarkersForView(side);
+                renderAnnotations(side); // NEW
 
             } catch (err) {
                 console.error("Error rendering page:", err);
@@ -658,11 +771,279 @@
 
             if (newPage >= 1 && newPage <= doc.pageCount) {
                 viewState.pageNum = newPage;
-                viewState.scrollTop = 0; // Reset scroll on page change
+                viewState.scrollTop = 0; 
                 saveSettings(); 
                 renderPage(side);
             }
         }
+
+        // --- Annotation Logic ---
+
+        function renderAnnotations(side) {
+            const viewState = state.view[side];
+            const canvas = els[side + 'AnnoCanvas'];
+            const ctx = canvas.getContext('2d');
+            const width = canvas.width;
+            const height = canvas.height;
+
+            // Clear canvas
+            ctx.clearRect(0, 0, width, height);
+
+            if (!state.annotations[viewState.docId]) return;
+
+            const strokes = state.annotations[viewState.docId][viewState.pageNum] || [];
+
+            strokes.forEach(stroke => {
+                ctx.beginPath();
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                
+                if (stroke.tool === 'eraser') {
+                    ctx.globalCompositeOperation = 'destination-out';
+                    ctx.lineWidth = stroke.size * width; // Normalized size * width
+                } else {
+                    ctx.globalCompositeOperation = 'source-over';
+                    ctx.strokeStyle = stroke.color;
+                    ctx.lineWidth = stroke.size * width;
+                }
+
+                if (stroke.points.length > 0) {
+                    const p0 = stroke.points[0];
+                    ctx.moveTo(p0.x * width, p0.y * height);
+                    for (let i = 1; i < stroke.points.length; i++) {
+                        const p = stroke.points[i];
+                        ctx.lineTo(p.x * width, p.y * height);
+                    }
+                }
+                ctx.stroke();
+            });
+            
+            // Reset composite operation
+            ctx.globalCompositeOperation = 'source-over';
+        }
+
+        function startAnnotationStroke(side, x, y) {
+            const docId = state.view[side].docId;
+            const pageNum = state.view[side].pageNum;
+            
+            if (!state.annotations[docId]) state.annotations[docId] = {};
+            if (!state.annotations[docId][pageNum]) state.annotations[docId][pageNum] = [];
+
+            // Create new stroke
+            const newStroke = {
+                tool: state.annoTool,
+                color: '#ef4444', // Red
+                size: 0.005, // Normalized width (0.5% of canvas width)
+                points: [{ x, y }] // Normalized coords
+            };
+
+            state.annotations[docId][pageNum].push(newStroke);
+            
+            // Draw initial dot
+            const canvas = els[side + 'AnnoCanvas'];
+            const ctx = canvas.getContext('2d');
+            const width = canvas.width;
+            const height = canvas.height;
+
+            ctx.beginPath();
+            ctx.lineCap = 'round';
+            if (state.annoTool === 'eraser') {
+                ctx.globalCompositeOperation = 'destination-out';
+                ctx.lineWidth = newStroke.size * width;
+            } else {
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.strokeStyle = newStroke.color;
+                ctx.lineWidth = newStroke.size * width;
+            }
+            
+            // Just a dot
+            ctx.moveTo(x * width, y * height);
+            ctx.lineTo(x * width, y * height);
+            ctx.stroke();
+            ctx.globalCompositeOperation = 'source-over';
+        }
+
+        function continueAnnotationStroke(side, x, y) {
+            const docId = state.view[side].docId;
+            const pageNum = state.view[side].pageNum;
+            const strokes = state.annotations[docId][pageNum];
+            const currentStroke = strokes[strokes.length - 1];
+            
+            currentStroke.points.push({ x, y });
+
+            // Draw line segment
+            const canvas = els[side + 'AnnoCanvas'];
+            const ctx = canvas.getContext('2d');
+            const width = canvas.width;
+            const height = canvas.height;
+            const pts = currentStroke.points;
+
+            ctx.beginPath();
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            
+            if (state.annoTool === 'eraser') {
+                ctx.globalCompositeOperation = 'destination-out';
+                ctx.lineWidth = currentStroke.size * width;
+            } else {
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.strokeStyle = currentStroke.color;
+                ctx.lineWidth = currentStroke.size * width;
+            }
+
+            const prev = pts[pts.length - 2];
+            ctx.moveTo(prev.x * width, prev.y * height);
+            ctx.lineTo(x * width, y * height);
+            ctx.stroke();
+            ctx.globalCompositeOperation = 'source-over';
+        }
+
+        function finishAnnotationStroke(side) {
+            const docId = state.view[side].docId;
+            saveAnnotationsToDB(docId, state.annotations[docId]);
+        }
+
+
+        // --- Interaction / Global Mouse Handlers ---
+
+        function getMousePosInViewport(evt, side) {
+            const rect = els[side + 'Wrapper'].getBoundingClientRect();
+            return {
+                x: (evt.clientX - rect.left) / rect.width, // Normalized
+                y: (evt.clientY - rect.top) / rect.height  // Normalized
+            };
+        }
+
+        function handleMouseDown(e) {
+            // 1. Check if clicking a marker (highest priority)
+            if (e.target.closest('.link-marker')) return;
+
+            // 2. Determine side
+            const leftRect = els.leftWrapper.getBoundingClientRect();
+            const rightRect = els.rightWrapper.getBoundingClientRect();
+            let clickedSide = null;
+
+            if (e.clientX >= leftRect.left && e.clientX <= leftRect.right && 
+                e.clientY >= leftRect.top && e.clientY <= leftRect.bottom) {
+                clickedSide = 'left';
+            } else if (e.clientX >= rightRect.left && e.clientX <= rightRect.right && 
+                       e.clientY >= rightRect.top && e.clientY <= rightRect.bottom) {
+                clickedSide = 'right';
+            }
+
+            if (!clickedSide) return;
+            if (!state.view[clickedSide].docId) return;
+
+            // 3. Handle based on Mode
+            if (state.appMode === 'linking') {
+                state.drawing.active = true;
+                state.drawing.startSide = clickedSide;
+                const pos = getMousePosInViewport(e, clickedSide);
+                state.drawing.startPoint = { x: e.clientX, y: e.clientY }; 
+                state.drawing.startPointData = { 
+                    docId: state.view[clickedSide].docId,
+                    page: state.view[clickedSide].pageNum,
+                    x: pos.x,
+                    y: pos.y
+                };
+                state.drawing.currentPoint = { x: e.clientX, y: e.clientY };
+                els.currentPath.style.display = 'block';
+                updatePathVisual();
+            } 
+            else if (state.appMode === 'annotation') {
+                state.drawing.active = true;
+                state.drawing.startSide = clickedSide;
+                const pos = getMousePosInViewport(e, clickedSide);
+                startAnnotationStroke(clickedSide, pos.x, pos.y);
+            }
+        }
+
+        function handleMouseMove(e) {
+            if (!state.drawing.active) return;
+
+            const side = state.drawing.startSide;
+            if (!side) return;
+
+            if (state.appMode === 'linking') {
+                state.drawing.currentPoint = { x: e.clientX, y: e.clientY };
+                updatePathVisual();
+            } 
+            else if (state.appMode === 'annotation') {
+                const pos = getMousePosInViewport(e, side);
+                continueAnnotationStroke(side, pos.x, pos.y);
+            }
+        }
+
+        async function handleMouseUp(e) {
+            if (!state.drawing.active) return;
+
+            const side = state.drawing.startSide;
+
+            if (state.appMode === 'linking') {
+                const leftRect = els.leftWrapper.getBoundingClientRect();
+                const rightRect = els.rightWrapper.getBoundingClientRect();
+                let endSide = null;
+
+                if (e.clientX >= leftRect.left && e.clientX <= leftRect.right && 
+                    e.clientY >= leftRect.top && e.clientY <= leftRect.bottom) {
+                    endSide = 'left';
+                } else if (e.clientX >= rightRect.left && e.clientX <= rightRect.right && 
+                           e.clientY >= rightRect.top && e.clientY <= rightRect.bottom) {
+                    endSide = 'right';
+                }
+
+                let validLink = false;
+
+                if (endSide && state.view[endSide].docId) {
+                    const targetDoc = state.view[endSide].docId;
+                    const targetPage = state.view[endSide].pageNum;
+                    const sourceDoc = state.drawing.startPointData.docId;
+
+                    if (endSide !== side || targetPage !== state.drawing.startPointData.page) {
+                        const pos = getMousePosInViewport(e, endSide);
+                        const newLink = {
+                            id: 'link_' + Date.now(),
+                            source: state.drawing.startPointData,
+                            target: {
+                                docId: targetDoc,
+                                page: targetPage,
+                                x: pos.x,
+                                y: pos.y
+                            },
+                            path: `M ${state.drawing.startPointData.x} ${state.drawing.startPointData.y} L ${pos.x} ${pos.y}`
+                        };
+                        state.links.push(newLink);
+                        await saveLinkToDB(newLink);
+                        validLink = true;
+                        renderMarkersForView(side);
+                        renderMarkersForView(endSide);
+                    }
+                }
+                
+                state.drawing.active = false;
+                els.currentPath.style.display = 'none';
+                els.currentPath.setAttribute('d', '');
+                if (!validLink && endSide) showModal("Invalid Link", "Links must start and end on different pages.");
+            } 
+            else if (state.appMode === 'annotation') {
+                finishAnnotationStroke(side);
+                state.drawing.active = false;
+            }
+        }
+
+        function updatePathVisual() {
+            const start = state.drawing.startPoint;
+            const end = state.drawing.currentPoint;
+            const svgRect = els.drawingLayer.getBoundingClientRect();
+            const x1 = start.x - svgRect.left;
+            const y1 = start.y - svgRect.top;
+            const x2 = end.x - svgRect.left;
+            const y2 = end.y - svgRect.top;
+            const d = `M ${x1} ${y1} L ${x2} ${y2}`;
+            els.currentPath.setAttribute('d', d);
+        }
+
+        // --- Link Rendering & Navigation ---
 
         function renderMarkersForView(side) {
             const container = document.getElementById(side + '-markers-layer');
@@ -684,7 +1065,6 @@
 
                 const btn = document.createElement('div');
                 btn.className = 'link-marker';
-                
                 const targetDocName = state.documents[isSource ? link.target.docId : link.source.docId]?.name || 'Unknown';
                 const targetPage = isSource ? link.target.page : link.source.page;
                 btn.title = `Jump to: ${targetDocName} (Page ${targetPage})`;
@@ -695,7 +1075,6 @@
 
                 btn.style.left = `${x}px`;
                 btn.style.top = `${y}px`;
-                
                 btn.innerHTML = '<i class="fa-solid fa-link"></i>';
 
                 if (state.highlightRequest && 
@@ -704,7 +1083,6 @@
                     
                     btn.classList.add('marker-active');
                     targetMarkerElement = btn;
-                    
                     setTimeout(() => {
                         state.highlightRequest = null;
                         btn.classList.remove('marker-active');
@@ -738,172 +1116,24 @@
             state.highlightRequest = { side: otherSide, linkId: link.id };
             state.view[otherSide].docId = targetData.docId;
             state.view[otherSide].pageNum = targetData.page;
-            state.view[otherSide].scrollTop = 0; // Reset scroll when jumping via link (the marker centering handles position)
+            state.view[otherSide].scrollTop = 0; 
             
             saveSettings(); 
             renderPage(otherSide);
         }
 
-        // --- Interaction / Drawing Logic ---
-
-        function setMode(mode, save = true) {
-            state.mode = mode;
-            if (save) saveSettings(); 
-
-            document.body.className = mode === 'drawing' ? 'bg-gray-100 h-screen flex flex-col overflow-hidden text-gray-800 font-sans drawing-mode' : 'bg-gray-100 h-screen flex flex-col overflow-hidden text-gray-800 font-sans';
-
-            if (mode === 'navigation') {
-                els.modeNavBtn.classList.replace('text-gray-500', 'text-gray-800');
-                els.modeNavBtn.classList.add('bg-white', 'shadow-sm');
-                els.modeDrawBtn.classList.replace('text-gray-800', 'text-gray-500');
-                els.modeDrawBtn.classList.remove('bg-white', 'shadow-sm');
-            } else {
-                els.modeDrawBtn.classList.replace('text-gray-500', 'text-gray-800');
-                els.modeDrawBtn.classList.add('bg-white', 'shadow-sm');
-                els.modeNavBtn.classList.replace('text-gray-800', 'text-gray-500');
-                els.modeNavBtn.classList.remove('bg-white', 'shadow-sm');
-                if(save) showModal("Link Mode", "Click and drag from one document to another to create a link.");
-            }
-        }
-
-        function getMousePosInViewport(evt, side) {
-            const rect = els[side + 'Wrapper'].getBoundingClientRect();
-            return {
-                x: evt.clientX - rect.left,
-                y: evt.clientY - rect.top,
-                relX: (evt.clientX - rect.left) / rect.width, 
-                relY: (evt.clientY - rect.top) / rect.height  
-            };
-        }
-
-        function handleMouseDown(e) {
-            if (e.target.closest('.link-marker')) return;
-            if (state.mode !== 'drawing') return;
-            
-            const leftRect = els.leftWrapper.getBoundingClientRect();
-            const rightRect = els.rightWrapper.getBoundingClientRect();
-
-            let clickedSide = null;
-
-            if (e.clientX >= leftRect.left && e.clientX <= leftRect.right && 
-                e.clientY >= leftRect.top && e.clientY <= leftRect.bottom) {
-                clickedSide = 'left';
-            } else if (e.clientX >= rightRect.left && e.clientX <= rightRect.right && 
-                       e.clientY >= rightRect.top && e.clientY <= rightRect.bottom) {
-                clickedSide = 'right';
-            }
-
-            if (!clickedSide) return;
-            if (!state.view[clickedSide].docId) {
-                showModal("Error", "Please load a PDF in this view first.");
-                return;
-            }
-
-            state.drawing.active = true;
-            state.drawing.startSide = clickedSide;
-            
-            const pos = getMousePosInViewport(e, clickedSide);
-            state.drawing.startPoint = { x: e.clientX, y: e.clientY }; 
-            state.drawing.startPointData = { 
-                docId: state.view[clickedSide].docId,
-                page: state.view[clickedSide].pageNum,
-                x: pos.relX,
-                y: pos.relY
-            };
-            state.drawing.currentPoint = { x: e.clientX, y: e.clientY };
-
-            els.currentPath.style.display = 'block';
-            updatePathVisual();
-        }
-
-        function handleMouseMove(e) {
-            if (!state.drawing.active) return;
-            state.drawing.currentPoint = { x: e.clientX, y: e.clientY };
-            updatePathVisual();
-        }
-
-        async function handleMouseUp(e) {
-            if (!state.drawing.active) return;
-
-            const leftRect = els.leftWrapper.getBoundingClientRect();
-            const rightRect = els.rightWrapper.getBoundingClientRect();
-            let endSide = null;
-
-            if (e.clientX >= leftRect.left && e.clientX <= leftRect.right && 
-                e.clientY >= leftRect.top && e.clientY <= leftRect.bottom) {
-                endSide = 'left';
-            } else if (e.clientX >= rightRect.left && e.clientX <= rightRect.right && 
-                       e.clientY >= rightRect.top && e.clientY <= rightRect.bottom) {
-                endSide = 'right';
-            }
-
-            let validLink = false;
-
-            if (endSide && state.view[endSide].docId) {
-                const targetDoc = state.view[endSide].docId;
-                const targetPage = state.view[endSide].pageNum;
-                const sourceDoc = state.drawing.startPointData.docId;
-
-                if (endSide !== state.drawing.startSide || targetPage !== state.drawing.startPointData.page) {
-                     const pos = getMousePosInViewport(e, endSide);
-                     
-                     const newLink = {
-                        id: 'link_' + Date.now(),
-                        source: state.drawing.startPointData,
-                        target: {
-                            docId: targetDoc,
-                            page: targetPage,
-                            x: pos.relX,
-                            y: pos.relY
-                        },
-                        path: `M ${state.drawing.startPointData.x} ${state.drawing.startPointData.y} L ${pos.relX} ${pos.relY}`
-                     };
-                     
-                     state.links.push(newLink);
-                     await saveLinkToDB(newLink);
-                     validLink = true;
-                     
-                     renderMarkersForView(state.drawing.startSide);
-                     renderMarkersForView(endSide);
-                }
-            }
-
-            state.drawing.active = false;
-            els.currentPath.style.display = 'none';
-            els.currentPath.setAttribute('d', '');
-
-            if (!validLink && endSide) {
-                showModal("Invalid Link", "Links must start and end on different pages.");
-            }
-        }
-
-        function updatePathVisual() {
-            const start = state.drawing.startPoint;
-            const end = state.drawing.currentPoint;
-            
-            const svgRect = els.drawingLayer.getBoundingClientRect();
-            const x1 = start.x - svgRect.left;
-            const y1 = start.y - svgRect.top;
-            const x2 = end.x - svgRect.left;
-            const y2 = end.y - svgRect.top;
-
-            const d = `M ${x1} ${y1} L ${x2} ${y2}`;
-            els.currentPath.setAttribute('d', d);
-        }
-
-        // --- Project Export / Import (JSON) ---
-
+        // --- Project Export / Import ---
         function exportProject() {
             const docKeys = Object.keys(state.documents);
             if (docKeys.length === 0) {
                 showModal("Export", "No documents loaded.");
                 return;
             }
-
             const projectData = {
                 version: "1.0",
                 timestamp: Date.now(),
                 links: state.links,
+                annotations: state.annotations,
                 documents: docKeys.map(id => ({
                     id,
                     name: state.documents[id].name,
@@ -918,19 +1148,16 @@
             document.body.appendChild(downloadAnchorNode); 
             downloadAnchorNode.click();
             downloadAnchorNode.remove();
-
-            showModal("Export Success", "Project saved! \n\nNote: When you import this project, you will need to select the corresponding PDF files again.");
+            showModal("Export Success", "Project saved! \n\nNote: Annotations are included. You will need to re-upload the PDF files to view them.");
         }
 
         function handleProjectImport(e) {
             const file = e.target.files[0];
             if (!file) return;
-
             const reader = new FileReader();
             reader.onload = function(event) {
                 try {
                     const project = JSON.parse(event.target.result);
-                    
                     if (!project.links || !project.documents) throw new Error("Invalid format");
 
                     project.links.forEach(async link => {
@@ -938,13 +1165,18 @@
                         await saveLinkToDB(link);
                     });
                     
-                    let msg = "Project loaded! Links added.\n\nPlease re-upload the following PDFs to activate them:\n";
-                    project.documents.forEach(d => {
-                        msg += `- ${d.name}\n`;
-                    });
+                    if (project.annotations) {
+                        state.annotations = { ...state.annotations, ...project.annotations };
+                        // Save all annotations to DB
+                        Object.keys(project.annotations).forEach(docId => {
+                            saveAnnotationsToDB(docId, project.annotations[docId]);
+                        });
+                    }
+
+                    let msg = "Project loaded! Links and Annotations added.\n\nPlease re-upload the following PDFs to activate them:\n";
+                    project.documents.forEach(d => msg += `- ${d.name}\n`);
                     
                     showModal("Project Imported", msg);
-                    
                     renderMarkersForView('left');
                     renderMarkersForView('right');
 

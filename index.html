@@ -37,29 +37,38 @@
         /* Link Button Marker */
         .link-marker {
             position: absolute;
-            width: 24px;
-            height: 24px;
+            width: 28px;
+            height: 28px;
             background-color: #ef4444; /* red-500 */
             border: 2px solid white;
             border-radius: 50%;
             transform: translate(-50%, -50%);
+            
+            /* CRITICAL FIX: Re-enable pointer events for the marker specifically */
+            pointer-events: auto !important; 
+            
             cursor: pointer;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
-            z-index: 50;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.4);
+            z-index: 60; /* Ensure it sits above the drawing layer (z-40) */
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 10px;
+            font-size: 12px;
             color: white;
-            transition: background-color 0.2s, transform 0.2s;
+            transition: background-color 0.2s, transform 0.2s, box-shadow 0.2s;
         }
+        
         .link-marker:hover {
             background-color: #dc2626; /* red-600 */
-            transform: translate(-50%, -50%) scale(1.2);
-            z-index: 51;
+            transform: translate(-50%, -50%) scale(1.15);
+            z-index: 61;
+            box-shadow: 0 6px 8px rgba(0,0,0,0.5);
         }
-        .link-marker.active {
-            background-color: #3b82f6; /* blue-500 */
+        
+        /* Active state styling (optional, useful for feedback) */
+        .link-marker:active {
+            background-color: #991b1b;
+            transform: translate(-50%, -50%) scale(0.95);
         }
 
         /* Drawing Layer */
@@ -72,6 +81,11 @@
         }
         body.drawing-mode .pdf-canvas-container {
             cursor: crosshair;
+        }
+        /* Hide markers when drawing to avoid confusion, or keep them? Let's keep them clickable unless dragging starts */
+        body.drawing-mode .link-marker {
+            pointer-events: none; /* Disable marker clicks while drawing lines */
+            opacity: 0.5;
         }
 
         /* Modal */
@@ -152,7 +166,7 @@
             
             <!-- Left Viewport -->
             <div class="flex-1 flex flex-col border-r border-gray-300 relative min-w-0 group">
-                <div class="h-10 bg-white border-b border-gray-300 flex items-center justify-between px-4 shrink-0">
+                <div class="h-10 bg-white border-b border-gray-300 flex items-center justify-between px-4 shrink-0 z-10">
                     <span class="text-sm font-bold text-gray-600 truncate w-32" id="left-view-title">None</span>
                     <div class="flex items-center gap-2">
                         <button onclick="navigatePage('left', -1)" class="p-1 hover:bg-gray-100 rounded text-gray-600"><i class="fa-solid fa-chevron-left"></i></button>
@@ -171,7 +185,7 @@
 
             <!-- Right Viewport -->
             <div class="flex-1 flex flex-col relative min-w-0">
-                <div class="h-10 bg-white border-b border-gray-300 flex items-center justify-between px-4 shrink-0">
+                <div class="h-10 bg-white border-b border-gray-300 flex items-center justify-between px-4 shrink-0 z-10">
                     <span class="text-sm font-bold text-gray-600 truncate w-32" id="right-view-title">None</span>
                     <div class="flex items-center gap-2">
                         <button onclick="navigatePage('right', -1)" class="p-1 hover:bg-gray-100 rounded text-gray-600"><i class="fa-solid fa-chevron-left"></i></button>
@@ -222,6 +236,7 @@
                 active: false,
                 startSide: null, // 'left' | 'right'
                 startPoint: { x: 0, y: 0 }, // Screen coordinates relative to viewport
+                startPointData: null, // Normalized data
                 currentPoint: { x: 0, y: 0 }
             }
         };
@@ -263,7 +278,7 @@
             window.addEventListener('mousemove', handleMouseMove);
             window.addEventListener('mouseup', handleMouseUp);
 
-            // Handle scroll to update marker positions if needed (optional optimization)
+            // Handle scroll to update marker positions if needed
             els.leftViewport.addEventListener('scroll', () => renderMarkersForView('left'));
             els.rightViewport.addEventListener('scroll', () => renderMarkersForView('right'));
         }
@@ -285,7 +300,7 @@
 
                     // Generate thumbnail for page 1
                     const page = await pdfDoc.getPage(1);
-                    const viewport = page.getViewport({ scale: 0.2 }); // Small scale for thumb
+                    const viewport = page.getViewport({ scale: 0.2 }); 
                     const canvas = document.createElement('canvas');
                     const context = canvas.getContext('2d');
                     canvas.height = viewport.height;
@@ -315,7 +330,7 @@
 
             if (loadedCount > 0) {
                 renderDocList();
-                els.uploadInput.value = ''; // Reset input
+                els.uploadInput.value = ''; 
             }
         }
 
@@ -341,7 +356,6 @@
                     (isActiveLeft || isActiveRight) ? 'bg-blue-50 border-blue-200' : 'hover:bg-gray-50 border-transparent bg-white'
                 }`;
                 
-                // View indicators
                 let badges = '';
                 if (isActiveLeft) badges += `<span class="text-[10px] bg-blue-500 text-white px-1.5 py-0.5 rounded ml-auto">L</span>`;
                 if (isActiveRight) badges += `<span class="text-[10px] bg-green-500 text-white px-1.5 py-0.5 rounded ml-auto">R</span>`;
@@ -356,17 +370,11 @@
                 `;
 
                 item.onclick = () => {
-                    // Smart switching: if neither, set left. If left set, set right. If both, toggle off? 
-                    // Simple logic: Always set Right if clicking sidebar item, unless it's already active right, then maybe move to left?
-                    // Let's stick to prompt: "Click to switch active PDF". 
-                    // Strategy: If active in Left, move to Right. If active in Right, move to Left. If neither, fill empty slot.
-                    
                     if (isActiveLeft) {
                         setActiveDocument('right', id);
                     } else if (isActiveRight) {
                         setActiveDocument('left', id);
                     } else {
-                        // Fill first available
                         if (!state.view.left.docId) setActiveDocument('left', id);
                         else setActiveDocument('right', id);
                     }
@@ -378,12 +386,8 @@
         }
 
         function setActiveDocument(side, docId) {
-            const prevDocId = state.view[side].docId;
-            
-            // Update State
             state.view[side].docId = docId;
-            state.view[side].pageNum = 1; // Reset to page 1
-            
+            state.view[side].pageNum = 1; 
             renderPage(side);
             renderDocList();
         }
@@ -394,31 +398,27 @@
             const canvas = els[side + 'Canvas'];
             const ctx = canvas.getContext('2d');
 
-            // Clear canvas if no doc
             if (!docId || !state.documents[docId]) {
                 canvas.width = 0;
                 canvas.height = 0;
                 els[side + 'Title'].innerText = 'None';
                 els[side + 'PageInd'].innerText = '-- / --';
-                // Clear markers
                 document.getElementById(side + '-markers-layer').innerHTML = '';
                 return;
             }
 
             const doc = state.documents[docId];
             
-            // Update UI Labels
             els[side + 'Title'].innerText = doc.name;
             els[side + 'PageInd'].innerText = `${viewState.pageNum} / ${doc.pageCount}`;
 
             try {
                 const page = await doc.pdfDoc.getPage(viewState.pageNum);
-                const viewport = page.getViewport({ scale: 1.5 }); // Base scale for good quality
+                const viewport = page.getViewport({ scale: 1.5 }); 
 
                 canvas.width = viewport.width;
                 canvas.height = viewport.height;
 
-                // Adjust wrapper size to match canvas to ensure coordinate accuracy
                 const wrapper = els[side + 'Wrapper'];
                 wrapper.style.width = `${viewport.width}px`;
                 wrapper.style.height = `${viewport.height}px`;
@@ -429,7 +429,6 @@
                 };
                 await page.render(renderContext).promise;
 
-                // Re-render markers for this page
                 renderMarkersForView(side);
 
             } catch (err) {
@@ -454,12 +453,11 @@
 
         function renderMarkersForView(side) {
             const container = document.getElementById(side + '-markers-layer');
-            container.innerHTML = ''; // Clear
+            container.innerHTML = ''; 
 
             const viewState = state.view[side];
             if (!viewState.docId) return;
 
-            // Find links where source OR target is this doc/page
             const relevantLinks = state.links.filter(link => 
                 (link.source.docId === viewState.docId && link.source.page === viewState.pageNum) ||
                 (link.target.docId === viewState.docId && link.target.page === viewState.pageNum)
@@ -469,12 +467,14 @@
                 let isSource = (link.source.docId === viewState.docId && link.source.page === viewState.pageNum);
                 let pointData = isSource ? link.source : link.target;
 
-                // Create Marker Button
                 const btn = document.createElement('div');
                 btn.className = 'link-marker';
-                btn.title = `Link to ${state.documents[isSource ? link.target.docId : link.source.docId].name} (Pg ${isSource ? link.target.page : link.source.page})`;
                 
-                // Convert stored coords (0-1 range relative to page) to pixels
+                // Target info for tooltip
+                const targetDocName = state.documents[isSource ? link.target.docId : link.source.docId].name;
+                const targetPage = isSource ? link.target.page : link.source.page;
+                btn.title = `Jump to: ${targetDocName} (Page ${targetPage})`;
+                
                 const wrapper = els[side + 'Wrapper'];
                 const x = pointData.x * wrapper.offsetWidth;
                 const y = pointData.y * wrapper.offsetHeight;
@@ -482,12 +482,12 @@
                 btn.style.left = `${x}px`;
                 btn.style.top = `${y}px`;
                 
-                // Icon inside
                 btn.innerHTML = '<i class="fa-solid fa-link"></i>';
 
                 // Click Event: Navigate to the other side
                 btn.onclick = (e) => {
-                    e.stopPropagation(); // Prevent draw trigger
+                    e.stopPropagation();
+                    e.preventDefault(); // Prevent any default drag behavior
                     followLink(link, side);
                 };
 
@@ -496,21 +496,14 @@
         }
 
         function followLink(link, fromSide) {
-            // Determine target details
             const isFromSource = (link.source.docId === state.view[fromSide].docId);
             const targetData = isFromSource ? link.target : link.source;
             const otherSide = fromSide === 'left' ? 'right' : 'left';
 
-            // Set the other view to the target
             state.view[otherSide].docId = targetData.docId;
             state.view[otherSide].pageNum = targetData.page;
             
             renderPage(otherSide);
-            
-            // Visual feedback
-            const btn = document.createElement('div');
-            // Create a temporary flash effect at target location?
-            // For now, the page switch is sufficient feedback.
         }
 
         // --- Interaction / Drawing Logic ---
@@ -529,6 +522,7 @@
                 els.modeDrawBtn.classList.add('bg-white', 'shadow-sm');
                 els.modeNavBtn.classList.replace('text-gray-800', 'text-gray-500');
                 els.modeNavBtn.classList.remove('bg-white', 'shadow-sm');
+                // Show toast or simple alert logic if needed, or rely on UI cursor change
                 showModal("Link Mode", "Click and drag from one document to another to create a link.");
             }
         }
@@ -538,21 +532,22 @@
             return {
                 x: evt.clientX - rect.left,
                 y: evt.clientY - rect.top,
-                relX: (evt.clientX - rect.left) / rect.width, // Normalized 0-1
-                relY: (evt.clientY - rect.top) / rect.height  // Normalized 0-1
+                relX: (evt.clientX - rect.left) / rect.width, 
+                relY: (evt.clientY - rect.top) / rect.height  
             };
         }
 
         function handleMouseDown(e) {
+            // If clicking a link marker, do nothing (let the marker's onclick handle it)
+            if (e.target.closest('.link-marker')) return;
+
             if (state.mode !== 'drawing') return;
             
-            // Identify which side was clicked
             const leftRect = els.leftWrapper.getBoundingClientRect();
             const rightRect = els.rightWrapper.getBoundingClientRect();
 
             let clickedSide = null;
 
-            // Check bounds (taking scroll into account via getBoundingClientRect)
             if (e.clientX >= leftRect.left && e.clientX <= leftRect.right && 
                 e.clientY >= leftRect.top && e.clientY <= leftRect.bottom) {
                 clickedSide = 'left';
@@ -571,8 +566,8 @@
             state.drawing.startSide = clickedSide;
             
             const pos = getMousePosInViewport(e, clickedSide);
-            state.drawing.startPoint = { x: e.clientX, y: e.clientY }; // Screen coords for SVG line
-            state.drawing.startPointData = { // Normalized coords for storage
+            state.drawing.startPoint = { x: e.clientX, y: e.clientY }; 
+            state.drawing.startPointData = { 
                 docId: state.view[clickedSide].docId,
                 page: state.view[clickedSide].pageNum,
                 x: pos.relX,
@@ -580,7 +575,6 @@
             };
             state.drawing.currentPoint = { x: e.clientX, y: e.clientY };
 
-            // Show Path
             els.currentPath.style.display = 'block';
             updatePathVisual();
         }
@@ -594,7 +588,6 @@
         function handleMouseUp(e) {
             if (!state.drawing.active) return;
 
-            // Identify target side
             const leftRect = els.leftWrapper.getBoundingClientRect();
             const rightRect = els.rightWrapper.getBoundingClientRect();
             let endSide = null;
@@ -607,8 +600,6 @@
                 endSide = 'right';
             }
 
-            // Validation: Must end on different doc, or different page of same doc? 
-            // Prompt says "between any two points across documents". Let's allow same doc if pages differ, or different docs.
             let validLink = false;
 
             if (endSide && state.view[endSide].docId) {
@@ -616,7 +607,6 @@
                 const targetPage = state.view[endSide].pageNum;
                 const sourceDoc = state.drawing.startPointData.docId;
 
-                // Simple validation: don't link to exact same spot
                 if (endSide !== state.drawing.startSide || targetPage !== state.drawing.startPointData.page) {
                      const pos = getMousePosInViewport(e, endSide);
                      
@@ -629,22 +619,17 @@
                             x: pos.relX,
                             y: pos.relY
                         },
-                        // We aren't storing a complex SVG path string, but rather endpoints. 
-                        // The prompt asked for "path: string". We can store a simplified descriptor or SVG path data.
-                        // Let's generate a simple SVG path string for storage.
                         path: `M ${state.drawing.startPointData.x} ${state.drawing.startPointData.y} L ${pos.relX} ${pos.relY}`
                      };
                      
                      state.links.push(newLink);
                      validLink = true;
                      
-                     // Refresh markers
                      renderMarkersForView(state.drawing.startSide);
                      renderMarkersForView(endSide);
                 }
             }
 
-            // Reset Drawing State
             state.drawing.active = false;
             els.currentPath.style.display = 'none';
             els.currentPath.setAttribute('d', '');
@@ -658,8 +643,6 @@
             const start = state.drawing.startPoint;
             const end = state.drawing.currentPoint;
             
-            // Draw line in SVG overlay (screen coordinates)
-            // Need to account for offset of the SVG layer
             const svgRect = els.drawingLayer.getBoundingClientRect();
             const x1 = start.x - svgRect.left;
             const y1 = start.y - svgRect.top;
@@ -679,13 +662,6 @@
                 return;
             }
 
-            // Note: We cannot easily save full PDF binaries in a JSON without bloating it massively.
-            // Standard practice for these tools is to save the "Project State" and assume user has the files 
-            // or use IndexedDB. However, the prompt asks to "save and open the save project".
-            // Since this is a browser-only tool, if the user refreshes, files are lost (unless using File System Access API, which is complex).
-            // I will implement a JSON export that saves the LINKS and METADATA. 
-            // I will add a warning that the PDFs need to be re-imported (or we try to match filenames).
-            
             const projectData = {
                 version: "1.0",
                 timestamp: Date.now(),
@@ -694,7 +670,6 @@
                     id,
                     name: state.documents[id].name,
                     pageCount: state.documents[id].pageCount
-                    // We do NOT save the binary data to keep JSON small.
                 }))
             };
 
@@ -702,7 +677,7 @@
             const downloadAnchorNode = document.createElement('a');
             downloadAnchorNode.setAttribute("href", dataStr);
             downloadAnchorNode.setAttribute("download", "pdf_linker_project.json");
-            document.body.appendChild(downloadAnchorNode); // required for firefox
+            document.body.appendChild(downloadAnchorNode); 
             downloadAnchorNode.click();
             downloadAnchorNode.remove();
 
@@ -720,24 +695,15 @@
                     
                     if (!project.links || !project.documents) throw new Error("Invalid format");
 
-                    // Restore Links
                     state.links = project.links;
-                    
-                    // We can't restore the actual PDF Document Objects because they come from User File Input.
-                    // We have to ask the user to upload the files again, OR we can try to load them if the app was persistent.
-                    // Given the constraints, we will clear current docs and ask user to re-upload the specific files named in the project.
                     
                     let msg = "Project loaded! Please re-upload the following PDFs to restore the links:\n";
                     project.documents.forEach(d => {
                         msg += `- ${d.name}\n`;
                     });
                     
-                    // Update UI to show we are waiting for files
-                    // In a real app, we might map the files by name upon upload.
-                    
                     showModal("Project Imported", msg);
                     
-                    // Clear current state to prepare for re-mapping
                     state.documents = {};
                     state.view.left.docId = null;
                     state.view.right.docId = null;
@@ -751,13 +717,11 @@
                 }
             };
             reader.readAsText(file);
-            e.target.value = ''; // Reset
+            e.target.value = ''; 
         }
 
-        // --- Modal Helpers ---
         function showModal(title, body) {
             els.modalTitle.innerText = title;
-            // Handle newlines in body
             els.modalBody.innerHTML = body.replace(/\n/g, '<br>');
             els.modal.classList.remove('hidden');
         }
@@ -766,7 +730,6 @@
             els.modal.classList.add('hidden');
         }
 
-        // Start
         init();
 
     </script>

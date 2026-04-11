@@ -43,13 +43,10 @@
             border: 2px solid white;
             border-radius: 50%;
             transform: translate(-50%, -50%);
-            
-            /* CRITICAL FIX: Re-enable pointer events for the marker specifically */
             pointer-events: auto !important; 
-            
             cursor: pointer;
             box-shadow: 0 4px 6px rgba(0,0,0,0.4);
-            z-index: 60; /* Ensure it sits above the drawing layer (z-40) */
+            z-index: 60; 
             display: flex;
             align-items: center;
             justify-content: center;
@@ -64,16 +61,23 @@
             z-index: 61;
             box-shadow: 0 6px 8px rgba(0,0,0,0.5);
         }
-        
-        /* Active state styling (optional, useful for feedback) */
-        .link-marker:active {
-            background-color: #991b1b;
-            transform: translate(-50%, -50%) scale(0.95);
+
+        /* Active Highlight Animation */
+        @keyframes markerPulse {
+            0% { transform: translate(-50%, -50%) scale(1); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7); }
+            70% { transform: translate(-50%, -50%) scale(1.4); box-shadow: 0 0 0 15px rgba(59, 130, 246, 0); }
+            100% { transform: translate(-50%, -50%) scale(1); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+        }
+
+        .marker-active {
+            background-color: #3b82f6 !important; /* Blue-500 */
+            z-index: 100;
+            animation: markerPulse 2s infinite;
         }
 
         /* Drawing Layer */
         #drawing-layer {
-            pointer-events: none; /* Let clicks pass through to canvas unless drawing */
+            pointer-events: none; 
         }
         body.drawing-mode #drawing-layer {
             pointer-events: auto;
@@ -82,9 +86,8 @@
         body.drawing-mode .pdf-canvas-container {
             cursor: crosshair;
         }
-        /* Hide markers when drawing to avoid confusion, or keep them? Let's keep them clickable unless dragging starts */
         body.drawing-mode .link-marker {
-            pointer-events: none; /* Disable marker clicks while drawing lines */
+            pointer-events: none; 
             opacity: 0.5;
         }
 
@@ -94,7 +97,6 @@
         }
     </style>
     <script>
-        // Set PDF.js worker
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     </script>
 </head>
@@ -143,13 +145,11 @@
             </div>
             
             <div id="doc-list" class="flex-1 overflow-y-auto p-2 space-y-2">
-                <!-- Document Items will be injected here -->
                 <div class="text-center mt-10 text-gray-400 text-sm italic" id="empty-state-msg">
                     No PDFs imported yet.
                 </div>
             </div>
 
-            <!-- Instructions Footer -->
             <div class="p-4 bg-gray-50 border-t border-gray-200 text-xs text-gray-500">
                 <p class="font-semibold mb-1">How to use:</p>
                 <ul class="list-disc pl-4 space-y-1">
@@ -175,7 +175,6 @@
                     </div>
                 </div>
                 <div class="flex-1 overflow-auto relative flex justify-center p-4 bg-gray-500/10 pdf-canvas-container" id="left-viewport">
-                    <!-- Canvas injected here -->
                     <div id="left-canvas-wrapper" class="relative shadow-lg">
                         <canvas id="left-canvas" class="pdf-canvas bg-white block"></canvas>
                         <div id="left-markers-layer" class="absolute inset-0 pointer-events-none"></div>
@@ -194,7 +193,6 @@
                     </div>
                 </div>
                 <div class="flex-1 overflow-auto relative flex justify-center p-4 bg-gray-500/10 pdf-canvas-container" id="right-viewport">
-                    <!-- Canvas injected here -->
                     <div id="right-canvas-wrapper" class="relative shadow-lg">
                         <canvas id="right-canvas" class="pdf-canvas bg-white block"></canvas>
                         <div id="right-markers-layer" class="absolute inset-0 pointer-events-none"></div>
@@ -202,16 +200,15 @@
                 </div>
             </div>
 
-            <!-- SVG Drawing Overlay (Covers everything) -->
+            <!-- SVG Drawing Overlay -->
             <svg id="drawing-layer" class="absolute inset-0 w-full h-full z-40 overflow-visible">
-                <!-- Dynamic Line Path -->
                 <path id="current-draw-path" d="" fill="none" stroke="#ef4444" stroke-width="2" stroke-dasharray="5,5" style="display:none;"></path>
             </svg>
 
         </main>
     </div>
 
-    <!-- Modal for Navigation/Alerts -->
+    <!-- Modal -->
     <div id="modal" class="fixed inset-0 modal-backdrop hidden flex items-center justify-center z-50">
         <div class="bg-white rounded-lg shadow-xl p-6 max-w-sm w-full">
             <h3 id="modal-title" class="text-lg font-bold mb-2">Alert</h3>
@@ -225,20 +222,22 @@
     <script>
         // --- State Management ---
         const state = {
-            documents: {}, // { id: { file, pdfDoc, name, pageCount, thumbnailBase64 } }
+            documents: {}, 
             view: {
                 left: { docId: null, pageNum: 1, scale: 1.0 },
                 right: { docId: null, pageNum: 1, scale: 1.0 }
             },
-            links: [], // { id, source: {docId, page, x, y}, target: {docId, page, x, y}, path: string }
-            mode: 'navigation', // 'navigation' | 'drawing'
+            links: [], 
+            mode: 'navigation', 
             drawing: {
                 active: false,
-                startSide: null, // 'left' | 'right'
-                startPoint: { x: 0, y: 0 }, // Screen coordinates relative to viewport
-                startPointData: null, // Normalized data
+                startSide: null, 
+                startPoint: { x: 0, y: 0 }, 
+                startPointData: null, 
                 currentPoint: { x: 0, y: 0 }
-            }
+            },
+            // New: State to handle highlighting the target
+            highlightRequest: null // { side: 'left'|'right', linkId: string }
         };
 
         // --- DOM Elements ---
@@ -260,45 +259,33 @@
             modal: document.getElementById('modal'),
             modalTitle: document.getElementById('modal-title'),
             modalBody: document.getElementById('modal-body'),
-            // Indicators
             leftTitle: document.getElementById('left-view-title'),
             rightTitle: document.getElementById('right-view-title'),
             leftPageInd: document.getElementById('left-page-indicator'),
             rightPageInd: document.getElementById('right-page-indicator'),
         };
 
-        // --- Initialization ---
         function init() {
-            // Setup Event Listeners
             els.uploadInput.addEventListener('change', handleFileUpload);
             els.importInput.addEventListener('change', handleProjectImport);
-            
-            // Drawing Events (attached to window to catch mouseup anywhere)
             window.addEventListener('mousedown', handleMouseDown);
             window.addEventListener('mousemove', handleMouseMove);
             window.addEventListener('mouseup', handleMouseUp);
-
-            // Handle scroll to update marker positions if needed
             els.leftViewport.addEventListener('scroll', () => renderMarkersForView('left'));
             els.rightViewport.addEventListener('scroll', () => renderMarkersForView('right'));
         }
 
-        // --- File Handling ---
         async function handleFileUpload(e) {
             const files = Array.from(e.target.files);
             if (files.length === 0) return;
 
-            let loadedCount = 0;
-
             for (const file of files) {
                 const id = 'doc_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-                
                 try {
                     const arrayBuffer = await file.arrayBuffer();
                     const loadingTask = pdfjsLib.getDocument(arrayBuffer);
                     const pdfDoc = await loadingTask.promise;
 
-                    // Generate thumbnail for page 1
                     const page = await pdfDoc.getPage(1);
                     const viewport = page.getViewport({ scale: 0.2 }); 
                     const canvas = document.createElement('canvas');
@@ -317,24 +304,17 @@
                         thumbnail: thumbData
                     };
 
-                    // Auto-assign to views if empty
                     if (!state.view.left.docId) setActiveDocument('left', id);
                     else if (!state.view.right.docId) setActiveDocument('right', id);
 
-                    loadedCount++;
                 } catch (err) {
                     console.error("Error loading PDF:", err);
                     showModal("Error", `Could not load ${file.name}`);
                 }
             }
-
-            if (loadedCount > 0) {
-                renderDocList();
-                els.uploadInput.value = ''; 
-            }
+            renderDocList();
+            els.uploadInput.value = ''; 
         }
-
-        // --- Rendering Logic ---
 
         function renderDocList() {
             els.docList.innerHTML = '';
@@ -449,8 +429,6 @@
             }
         }
 
-        // --- Link / Marker Logic ---
-
         function renderMarkersForView(side) {
             const container = document.getElementById(side + '-markers-layer');
             container.innerHTML = ''; 
@@ -463,6 +441,8 @@
                 (link.target.docId === viewState.docId && link.target.page === viewState.pageNum)
             );
 
+            let targetMarkerElement = null;
+
             relevantLinks.forEach(link => {
                 let isSource = (link.source.docId === viewState.docId && link.source.page === viewState.pageNum);
                 let pointData = isSource ? link.source : link.target;
@@ -470,7 +450,6 @@
                 const btn = document.createElement('div');
                 btn.className = 'link-marker';
                 
-                // Target info for tooltip
                 const targetDocName = state.documents[isSource ? link.target.docId : link.source.docId].name;
                 const targetPage = isSource ? link.target.page : link.source.page;
                 btn.title = `Jump to: ${targetDocName} (Page ${targetPage})`;
@@ -484,15 +463,46 @@
                 
                 btn.innerHTML = '<i class="fa-solid fa-link"></i>';
 
-                // Click Event: Navigate to the other side
+                // Check if this is the target we need to highlight
+                if (state.highlightRequest && 
+                    state.highlightRequest.side === side && 
+                    state.highlightRequest.linkId === link.id) {
+                    
+                    btn.classList.add('marker-active');
+                    targetMarkerElement = btn;
+                    
+                    // Clear the highlight request after applying it (but keep animation via CSS)
+                    setTimeout(() => {
+                        state.highlightRequest = null;
+                        btn.classList.remove('marker-active');
+                    }, 3000);
+                }
+
                 btn.onclick = (e) => {
                     e.stopPropagation();
-                    e.preventDefault(); // Prevent any default drag behavior
+                    e.preventDefault(); 
                     followLink(link, side);
                 };
 
                 container.appendChild(btn);
             });
+
+            // If we found a target marker to highlight, scroll it into view center
+            if (targetMarkerElement) {
+                const viewport = els[side + 'Viewport'];
+                // Calculate scroll position to center the marker
+                // offsetTop is relative to the scrollable content (viewport)
+                const elementTop = targetMarkerElement.offsetTop;
+                const viewportHeight = viewport.clientHeight;
+                const elementHeight = targetMarkerElement.clientHeight;
+
+                const scrollTo = elementTop - (viewportHeight / 2) + (elementHeight / 2);
+
+                viewport.scrollTo({
+                    top: scrollTo,
+                    behavior: 'smooth'
+                });
+            }
         }
 
         function followLink(link, fromSide) {
@@ -500,9 +510,16 @@
             const targetData = isFromSource ? link.target : link.source;
             const otherSide = fromSide === 'left' ? 'right' : 'left';
 
+            // Set the highlight request BEFORE rendering the page
+            state.highlightRequest = {
+                side: otherSide,
+                linkId: link.id
+            };
+
             state.view[otherSide].docId = targetData.docId;
             state.view[otherSide].pageNum = targetData.page;
             
+            // Render page (which will trigger renderMarkers, which will apply highlight and scroll)
             renderPage(otherSide);
         }
 
@@ -522,7 +539,6 @@
                 els.modeDrawBtn.classList.add('bg-white', 'shadow-sm');
                 els.modeNavBtn.classList.replace('text-gray-800', 'text-gray-500');
                 els.modeNavBtn.classList.remove('bg-white', 'shadow-sm');
-                // Show toast or simple alert logic if needed, or rely on UI cursor change
                 showModal("Link Mode", "Click and drag from one document to another to create a link.");
             }
         }
@@ -538,9 +554,7 @@
         }
 
         function handleMouseDown(e) {
-            // If clicking a link marker, do nothing (let the marker's onclick handle it)
             if (e.target.closest('.link-marker')) return;
-
             if (state.mode !== 'drawing') return;
             
             const leftRect = els.leftWrapper.getBoundingClientRect();

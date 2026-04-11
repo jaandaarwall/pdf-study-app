@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF Linker Studio</title>
+    <title>PDF Linker Studio (Persistent)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- PDF.js -->
@@ -95,6 +95,17 @@
         .modal-backdrop {
             background-color: rgba(0,0,0,0.5);
         }
+
+        /* Loading Spinner */
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border-left-color: #09f;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
     <script>
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -106,7 +117,10 @@
     <header class="bg-white border-b border-gray-200 h-16 flex items-center justify-between px-6 shrink-0 z-20 shadow-sm">
         <div class="flex items-center gap-3">
             <i class="fa-solid fa-file-pdf text-red-500 text-2xl"></i>
-            <h1 class="text-xl font-bold text-gray-800">PDF Linker Studio</h1>
+            <div>
+                <h1 class="text-xl font-bold text-gray-800 leading-tight">PDF Linker Studio</h1>
+                <p class="text-[10px] text-green-600 font-medium"><i class="fa-solid fa-check-circle"></i> Auto-Save Enabled</p>
+            </div>
         </div>
         
         <div class="flex items-center gap-4">
@@ -145,19 +159,29 @@
             </div>
             
             <div id="doc-list" class="flex-1 overflow-y-auto p-2 space-y-2">
+                <!-- Document Items will be injected here -->
+                <div id="loading-spinner" class="hidden flex flex-col items-center justify-center mt-10">
+                    <div class="spinner mb-2"></div>
+                    <span class="text-xs text-gray-500">Restoring Session...</span>
+                </div>
                 <div class="text-center mt-10 text-gray-400 text-sm italic" id="empty-state-msg">
                     No PDFs imported yet.
                 </div>
             </div>
 
-            <div class="p-4 bg-gray-50 border-t border-gray-200 text-xs text-gray-500">
-                <p class="font-semibold mb-1">How to use:</p>
-                <ul class="list-disc pl-4 space-y-1">
-                    <li>Import 2+ PDFs.</li>
-                    <li>Select different PDFs for left/right views.</li>
-                    <li>Switch to <b>Draw Link</b> mode.</li>
-                    <li>Click & drag from one doc to another.</li>
-                </ul>
+            <!-- Controls Footer -->
+            <div class="p-4 bg-gray-50 border-t border-gray-200">
+                <button onclick="clearAllData()" class="w-full py-2 text-xs font-bold text-red-600 border border-red-200 rounded bg-red-50 hover:bg-red-100 transition-colors">
+                    <i class="fa-solid fa-trash mr-1"></i> Clear All Data
+                </button>
+                <div class="mt-3 text-xs text-gray-500">
+                    <p class="font-semibold mb-1">How to use:</p>
+                    <ul class="list-disc pl-4 space-y-1">
+                        <li>Import 2+ PDFs.</li>
+                        <li>Switch to <b>Draw Link</b>.</li>
+                        <li>Drag between docs to link.</li>
+                    </ul>
+                </div>
             </div>
         </aside>
 
@@ -220,6 +244,77 @@
     </div>
 
     <script>
+        // --- IndexedDB Persistence Layer ---
+        const DB_NAME = 'PDFLinkerStudioDB';
+        const DB_VERSION = 1;
+        let db;
+
+        async function initDB() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(DB_NAME, DB_VERSION);
+                request.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains('documents')) {
+                        db.createObjectStore('documents', { keyPath: 'id' });
+                    }
+                    if (!db.objectStoreNames.contains('links')) {
+                        db.createObjectStore('links', { keyPath: 'id' });
+                    }
+                };
+                request.onsuccess = (e) => {
+                    db = e.target.result;
+                    resolve(db);
+                };
+                request.onerror = (e) => reject('IndexedDB error: ' + e.target.errorCode);
+            });
+        }
+
+        async function saveDocumentToDB(docData) {
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(['documents'], 'readwrite');
+                const store = tx.objectStore('documents');
+                store.put(docData);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        async function saveLinkToDB(linkData) {
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(['links'], 'readwrite');
+                const store = tx.objectStore('links');
+                store.put(linkData);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        async function clearDB() {
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(['documents', 'links'], 'readwrite');
+                tx.objectStore('documents').clear();
+                tx.objectStore('links').clear();
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        async function loadStateFromDB() {
+            return new Promise((resolve, reject) => {
+                const result = { documents: [], links: [] };
+                const tx = db.transaction(['documents', 'links'], 'readonly');
+                
+                const docStore = tx.objectStore('documents');
+                const linkStore = tx.objectStore('links');
+
+                docStore.getAll().onsuccess = (e) => result.documents = e.target.result;
+                linkStore.getAll().onsuccess = (e) => result.links = e.target.result;
+
+                tx.oncomplete = () => resolve(result);
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
         // --- State Management ---
         const state = {
             documents: {}, 
@@ -236,8 +331,7 @@
                 startPointData: null, 
                 currentPoint: { x: 0, y: 0 }
             },
-            // New: State to handle highlighting the target
-            highlightRequest: null // { side: 'left'|'right', linkId: string }
+            highlightRequest: null 
         };
 
         // --- DOM Elements ---
@@ -245,6 +339,7 @@
             uploadInput: document.getElementById('pdf-upload-input'),
             docList: document.getElementById('doc-list'),
             emptyMsg: document.getElementById('empty-state-msg'),
+            loadingSpinner: document.getElementById('loading-spinner'),
             leftCanvas: document.getElementById('left-canvas'),
             rightCanvas: document.getElementById('right-canvas'),
             leftWrapper: document.getElementById('left-canvas-wrapper'),
@@ -265,7 +360,61 @@
             rightPageInd: document.getElementById('right-page-indicator'),
         };
 
-        function init() {
+        async function init() {
+            // 1. Initialize Database
+            try {
+                await initDB();
+                
+                // 2. Load existing data
+                const savedData = await loadStateFromDB();
+                
+                if (savedData.documents.length > 0 || savedData.links.length > 0) {
+                    els.loadingSpinner.classList.remove('hidden');
+                    els.emptyMsg.style.display = 'none';
+                    
+                    // Restore Links
+                    state.links = savedData.links;
+
+                    // Restore Documents
+                    for (const dbDoc of savedData.documents) {
+                        try {
+                            // Convert stored Blob back to ArrayBuffer for PDF.js
+                            const arrayBuffer = await dbDoc.fileBlob.arrayBuffer();
+                            const loadingTask = pdfjsLib.getDocument(arrayBuffer);
+                            const pdfDoc = await loadingTask.promise;
+
+                            state.documents[dbDoc.id] = {
+                                id: dbDoc.id,
+                                file: dbDoc.fileBlob, // Keep blob for potential re-saving
+                                pdfDoc: pdfDoc,
+                                name: dbDoc.name,
+                                pageCount: dbDoc.pageCount,
+                                thumbnail: dbDoc.thumbnail
+                            };
+
+                            // Auto-assign views if empty
+                            if (!state.view.left.docId) setActiveDocument('left', dbDoc.id, false);
+                            else if (!state.view.right.docId) setActiveDocument('right', dbDoc.id, false);
+
+                        } catch (err) {
+                            console.error("Failed to restore doc:", dbDoc.name, err);
+                        }
+                    }
+                    
+                    renderDocList();
+                    // Trigger render for views
+                    if (state.view.left.docId) renderPage('left');
+                    if (state.view.right.docId) renderPage('right');
+                }
+
+                els.loadingSpinner.classList.add('hidden');
+
+            } catch (err) {
+                console.error("DB Init failed:", err);
+                showModal("Database Error", "Could not load saved session.");
+            }
+
+            // Setup Listeners
             els.uploadInput.addEventListener('change', handleFileUpload);
             els.importInput.addEventListener('change', handleProjectImport);
             window.addEventListener('mousedown', handleMouseDown);
@@ -273,6 +422,26 @@
             window.addEventListener('mouseup', handleMouseUp);
             els.leftViewport.addEventListener('scroll', () => renderMarkersForView('left'));
             els.rightViewport.addEventListener('scroll', () => renderMarkersForView('right'));
+        }
+
+        async function clearAllData() {
+            if (confirm("Are you sure? This will delete all uploaded PDFs and links permanently.")) {
+                try {
+                    await clearDB();
+                    // Reset State
+                    state.documents = {};
+                    state.links = [];
+                    state.view.left.docId = null;
+                    state.view.right.docId = null;
+                    renderDocList();
+                    renderPage('left');
+                    renderPage('right');
+                    els.emptyMsg.style.display = 'block';
+                    showModal("Success", "All data cleared.");
+                } catch (e) {
+                    showModal("Error", "Could not clear database.");
+                }
+            }
         }
 
         async function handleFileUpload(e) {
@@ -286,6 +455,7 @@
                     const loadingTask = pdfjsLib.getDocument(arrayBuffer);
                     const pdfDoc = await loadingTask.promise;
 
+                    // Generate thumbnail
                     const page = await pdfDoc.getPage(1);
                     const viewport = page.getViewport({ scale: 0.2 }); 
                     const canvas = document.createElement('canvas');
@@ -295,14 +465,25 @@
                     await page.render({ canvasContext: context, viewport: viewport }).promise;
                     const thumbData = canvas.toDataURL();
 
-                    state.documents[id] = {
+                    const docObj = {
                         id,
-                        file,
+                        file: file,
                         pdfDoc,
                         name: file.name,
                         pageCount: pdfDoc.numPages,
                         thumbnail: thumbData
                     };
+
+                    state.documents[id] = docObj;
+
+                    // Persist to DB
+                    await saveDocumentToDB({
+                        id: docObj.id,
+                        name: docObj.name,
+                        pageCount: docObj.pageCount,
+                        thumbnail: docObj.thumbnail,
+                        fileBlob: file // Store the raw file object
+                    });
 
                     if (!state.view.left.docId) setActiveDocument('left', id);
                     else if (!state.view.right.docId) setActiveDocument('right', id);
@@ -365,11 +546,13 @@
             });
         }
 
-        function setActiveDocument(side, docId) {
+        function setActiveDocument(side, docId, render = true) {
             state.view[side].docId = docId;
             state.view[side].pageNum = 1; 
-            renderPage(side);
-            renderDocList();
+            if (render) {
+                renderPage(side);
+                renderDocList();
+            }
         }
 
         async function renderPage(side) {
@@ -450,7 +633,7 @@
                 const btn = document.createElement('div');
                 btn.className = 'link-marker';
                 
-                const targetDocName = state.documents[isSource ? link.target.docId : link.source.docId].name;
+                const targetDocName = state.documents[isSource ? link.target.docId : link.source.docId]?.name || 'Unknown';
                 const targetPage = isSource ? link.target.page : link.source.page;
                 btn.title = `Jump to: ${targetDocName} (Page ${targetPage})`;
                 
@@ -463,7 +646,7 @@
                 
                 btn.innerHTML = '<i class="fa-solid fa-link"></i>';
 
-                // Check if this is the target we need to highlight
+                // Highlight logic
                 if (state.highlightRequest && 
                     state.highlightRequest.side === side && 
                     state.highlightRequest.linkId === link.id) {
@@ -471,7 +654,6 @@
                     btn.classList.add('marker-active');
                     targetMarkerElement = btn;
                     
-                    // Clear the highlight request after applying it (but keep animation via CSS)
                     setTimeout(() => {
                         state.highlightRequest = null;
                         btn.classList.remove('marker-active');
@@ -487,21 +669,13 @@
                 container.appendChild(btn);
             });
 
-            // If we found a target marker to highlight, scroll it into view center
             if (targetMarkerElement) {
                 const viewport = els[side + 'Viewport'];
-                // Calculate scroll position to center the marker
-                // offsetTop is relative to the scrollable content (viewport)
                 const elementTop = targetMarkerElement.offsetTop;
                 const viewportHeight = viewport.clientHeight;
                 const elementHeight = targetMarkerElement.clientHeight;
-
                 const scrollTo = elementTop - (viewportHeight / 2) + (elementHeight / 2);
-
-                viewport.scrollTo({
-                    top: scrollTo,
-                    behavior: 'smooth'
-                });
+                viewport.scrollTo({ top: scrollTo, behavior: 'smooth' });
             }
         }
 
@@ -510,16 +684,9 @@
             const targetData = isFromSource ? link.target : link.source;
             const otherSide = fromSide === 'left' ? 'right' : 'left';
 
-            // Set the highlight request BEFORE rendering the page
-            state.highlightRequest = {
-                side: otherSide,
-                linkId: link.id
-            };
-
+            state.highlightRequest = { side: otherSide, linkId: link.id };
             state.view[otherSide].docId = targetData.docId;
             state.view[otherSide].pageNum = targetData.page;
-            
-            // Render page (which will trigger renderMarkers, which will apply highlight and scroll)
             renderPage(otherSide);
         }
 
@@ -599,7 +766,7 @@
             updatePathVisual();
         }
 
-        function handleMouseUp(e) {
+        async function handleMouseUp(e) {
             if (!state.drawing.active) return;
 
             const leftRect = els.leftWrapper.getBoundingClientRect();
@@ -637,6 +804,10 @@
                      };
                      
                      state.links.push(newLink);
+                     
+                     // Persist Link to DB
+                     await saveLinkToDB(newLink);
+
                      validLink = true;
                      
                      renderMarkersForView(state.drawing.startSide);
@@ -667,7 +838,7 @@
             els.currentPath.setAttribute('d', d);
         }
 
-        // --- Project Export / Import ---
+        // --- Project Export / Import (JSON) ---
 
         function exportProject() {
             const docKeys = Object.keys(state.documents);
@@ -695,7 +866,7 @@
             downloadAnchorNode.click();
             downloadAnchorNode.remove();
 
-            showModal("Export Success", "Project saved! \n\nNote: When you import this project, you will need to select the corresponding PDF files again if the browser cache was cleared.");
+            showModal("Export Success", "Project saved! \n\nNote: When you import this project, you will need to select the corresponding PDF files again.");
         }
 
         function handleProjectImport(e) {
@@ -709,21 +880,22 @@
                     
                     if (!project.links || !project.documents) throw new Error("Invalid format");
 
-                    state.links = project.links;
+                    // Merge links (save to DB)
+                    project.links.forEach(async link => {
+                        state.links.push(link);
+                        await saveLinkToDB(link);
+                    });
                     
-                    let msg = "Project loaded! Please re-upload the following PDFs to restore the links:\n";
+                    let msg = "Project loaded! Links added.\n\nPlease re-upload the following PDFs to activate them:\n";
                     project.documents.forEach(d => {
                         msg += `- ${d.name}\n`;
                     });
                     
                     showModal("Project Imported", msg);
                     
-                    state.documents = {};
-                    state.view.left.docId = null;
-                    state.view.right.docId = null;
-                    renderDocList();
-                    renderPage('left');
-                    renderPage('right');
+                    // Note: We do NOT clear documents here, just add links. User can then upload files.
+                    renderMarkersForView('left');
+                    renderMarkersForView('right');
 
                 } catch (err) {
                     showModal("Import Error", "Failed to parse project file.");
@@ -744,6 +916,7 @@
             els.modal.classList.add('hidden');
         }
 
+        // Start
         init();
 
     </script>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF Linker Studio (Persistent State)</title>
+    <title>PDF Linker Studio (Persistent State & Scroll)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- PDF.js -->
@@ -119,7 +119,7 @@
             <i class="fa-solid fa-file-pdf text-red-500 text-2xl"></i>
             <div>
                 <h1 class="text-xl font-bold text-gray-800 leading-tight">PDF Linker Studio</h1>
-                <p class="text-[10px] text-green-600 font-medium"><i class="fa-solid fa-check-circle"></i> Session Restored</p>
+                <p class="text-[10px] text-green-600 font-medium"><i class="fa-solid fa-check-circle"></i> Full Session Restored</p>
             </div>
         </div>
         
@@ -243,9 +243,19 @@
     </div>
 
     <script>
+        // --- Utilities ---
+        function debounce(func, wait) {
+            let timeout;
+            return function(...args) {
+                const context = this;
+                clearTimeout(timeout);
+                timeout = setTimeout(() => func.apply(context, args), wait);
+            };
+        }
+
         // --- IndexedDB Persistence Layer ---
         const DB_NAME = 'PDFLinkerStudioDB';
-        const DB_VERSION = 2; // Incremented version to update schema
+        const DB_VERSION = 2; 
         let db;
 
         async function initDB() {
@@ -259,7 +269,6 @@
                     if (!db.objectStoreNames.contains('links')) {
                         db.createObjectStore('links', { keyPath: 'id' });
                     }
-                    // NEW: Store for view state (page numbers, active docs)
                     if (!db.objectStoreNames.contains('settings')) {
                         db.createObjectStore('settings', { keyPath: 'id' });
                     }
@@ -292,7 +301,6 @@
             });
         }
 
-        // NEW: Save current view state
         async function saveSettings() {
             if (!db) return;
             const settings = {
@@ -337,8 +345,8 @@
         const state = {
             documents: {}, 
             view: {
-                left: { docId: null, pageNum: 1, scale: 1.0 },
-                right: { docId: null, pageNum: 1, scale: 1.0 }
+                left: { docId: null, pageNum: 1, scale: 1.0, scrollTop: 0 },
+                right: { docId: null, pageNum: 1, scale: 1.0, scrollTop: 0 }
             },
             links: [], 
             mode: 'navigation', 
@@ -378,21 +386,30 @@
             rightPageInd: document.getElementById('right-page-indicator'),
         };
 
+        // --- Scroll Handlers (Debounced) ---
+        const handleScroll = debounce((side) => {
+            const viewport = els[side + 'Viewport'];
+            // Update state
+            state.view[side].scrollTop = viewport.scrollTop;
+            // Save to DB
+            saveSettings();
+            // Re-render markers (existing logic to update positions if needed, though markers are relative to wrapper so usually not strictly needed on scroll unless there's parallax)
+            // Actually, we keep the existing logic just in case
+            renderMarkersForView(side);
+        }, 200);
+
         async function init() {
             try {
                 await initDB();
                 
-                // 1. Load all data (Docs, Links, Settings)
                 const savedData = await loadStateFromDB();
                 
                 if (savedData.documents.length > 0 || savedData.links.length > 0) {
                     els.loadingSpinner.classList.remove('hidden');
                     els.emptyMsg.style.display = 'none';
                     
-                    // Restore Links
                     state.links = savedData.links;
 
-                    // Restore Documents
                     for (const dbDoc of savedData.documents) {
                         try {
                             const arrayBuffer = await dbDoc.fileBlob.arrayBuffer();
@@ -412,24 +429,22 @@
                         }
                     }
 
-                    // 2. Restore View State (Documents & Page Numbers)
+                    // Restore View State (Docs, Pages, AND Scroll)
                     if (savedData.settings) {
                         const sView = savedData.settings.view;
-                        // Only restore if the document actually exists in our current loaded set
                         if (sView.left.docId && state.documents[sView.left.docId]) {
-                            state.view.left = { ...sView.left, scale: 1.0 }; // Reset scale just in case
+                            // Ensure scrollTop has a default value if missing in old DB
+                            state.view.left = { ...sView.left, scale: 1.0, scrollTop: sView.left.scrollTop || 0 };
                         }
                         if (sView.right.docId && state.documents[sView.right.docId]) {
-                            state.view.right = { ...sView.right, scale: 1.0 };
+                            state.view.right = { ...sView.right, scale: 1.0, scrollTop: sView.right.scrollTop || 0 };
                         }
-                        // Restore Mode
                         if (savedData.settings.mode) {
-                            setMode(savedData.settings.mode, false); // false = don't save while loading
+                            setMode(savedData.settings.mode, false); 
                         }
                     }
 
                     renderDocList();
-                    // Trigger render for views
                     if (state.view.left.docId) renderPage('left');
                     if (state.view.right.docId) renderPage('right');
                 }
@@ -440,14 +455,15 @@
                 console.error("DB Init failed:", err);
             }
 
-            // Setup Listeners
             els.uploadInput.addEventListener('change', handleFileUpload);
             els.importInput.addEventListener('change', handleProjectImport);
             window.addEventListener('mousedown', handleMouseDown);
             window.addEventListener('mousemove', handleMouseMove);
             window.addEventListener('mouseup', handleMouseUp);
-            els.leftViewport.addEventListener('scroll', () => renderMarkersForView('left'));
-            els.rightViewport.addEventListener('scroll', () => renderMarkersForView('right'));
+            
+            // Attach Scroll Listeners
+            els.leftViewport.addEventListener('scroll', () => handleScroll('left'));
+            els.rightViewport.addEventListener('scroll', () => handleScroll('right'));
         }
 
         async function clearAllData() {
@@ -456,8 +472,8 @@
                     await clearDB();
                     state.documents = {};
                     state.links = [];
-                    state.view.left = { docId: null, pageNum: 1, scale: 1.0 };
-                    state.view.right = { docId: null, pageNum: 1, scale: 1.0 };
+                    state.view.left = { docId: null, pageNum: 1, scale: 1.0, scrollTop: 0 };
+                    state.view.right = { docId: null, pageNum: 1, scale: 1.0, scrollTop: 0 };
                     renderDocList();
                     renderPage('left');
                     renderPage('right');
@@ -508,8 +524,6 @@
                         fileBlob: file 
                     });
 
-                    // Auto-assign if view is empty, but DON'T reset page if settings loaded it
-                    // Note: setActiveDocument resets page to 1.
                     if (!state.view.left.docId) setActiveDocument('left', id);
                     else if (!state.view.right.docId) setActiveDocument('right', id);
 
@@ -573,11 +587,10 @@
 
         function setActiveDocument(side, docId, render = true) {
             state.view[side].docId = docId;
-            // Only reset to page 1 if it's a manual selection change, not a restore.
-            // Since we overwrite the whole view object in init(), this explicit reset to 1 is fine here.
-            state.view[side].pageNum = 1; 
+            state.view[side].pageNum = 1;
+            state.view[side].scrollTop = 0; // Reset scroll on new doc
             
-            saveSettings(); // Save the new document selection
+            saveSettings(); 
             
             if (render) {
                 renderPage(side);
@@ -622,6 +635,13 @@
                 };
                 await page.render(renderContext).promise;
 
+                // Restore Scroll Position (CRITICAL FIX)
+                // We use setTimeout to ensure the DOM has updated with the new canvas size before setting scroll
+                const viewportEl = els[side + 'Viewport'];
+                if (viewState.scrollTop) {
+                    viewportEl.scrollTop = viewState.scrollTop;
+                }
+
                 renderMarkersForView(side);
 
             } catch (err) {
@@ -638,7 +658,8 @@
 
             if (newPage >= 1 && newPage <= doc.pageCount) {
                 viewState.pageNum = newPage;
-                saveSettings(); // Save the new page number
+                viewState.scrollTop = 0; // Reset scroll on page change
+                saveSettings(); 
                 renderPage(side);
             }
         }
@@ -717,8 +738,9 @@
             state.highlightRequest = { side: otherSide, linkId: link.id };
             state.view[otherSide].docId = targetData.docId;
             state.view[otherSide].pageNum = targetData.page;
+            state.view[otherSide].scrollTop = 0; // Reset scroll when jumping via link (the marker centering handles position)
             
-            saveSettings(); // Save the new view state after jumping
+            saveSettings(); 
             renderPage(otherSide);
         }
 
@@ -726,7 +748,7 @@
 
         function setMode(mode, save = true) {
             state.mode = mode;
-            if (save) saveSettings(); // Persist mode preference
+            if (save) saveSettings(); 
 
             document.body.className = mode === 'drawing' ? 'bg-gray-100 h-screen flex flex-col overflow-hidden text-gray-800 font-sans drawing-mode' : 'bg-gray-100 h-screen flex flex-col overflow-hidden text-gray-800 font-sans';
 
@@ -740,7 +762,6 @@
                 els.modeDrawBtn.classList.add('bg-white', 'shadow-sm');
                 els.modeNavBtn.classList.replace('text-gray-800', 'text-gray-500');
                 els.modeNavBtn.classList.remove('bg-white', 'shadow-sm');
-                // Don't show modal on init
                 if(save) showModal("Link Mode", "Click and drag from one document to another to create a link.");
             }
         }

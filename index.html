@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF Linker Studio (Swipe Erase)</title>
+    <title>PDF Linker Studio (Tablet Support)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- PDF.js -->
@@ -41,6 +41,9 @@
             left: 0;
             z-index: 55; 
             pointer-events: none; 
+            
+            /* CRITICAL FIX: Prevent browser scrolling/zooming when using Stylus/Pen */
+            touch-action: none; 
         }
         
         /* Cursor styles */
@@ -397,7 +400,8 @@
                 startSide: null, 
                 startPoint: { x: 0, y: 0 }, 
                 startPointData: null, 
-                currentPoint: { x: 0, y: 0 }
+                currentPoint: { x: 0, y: 0 },
+                pointerId: null 
             },
             highlightRequest: null 
         };
@@ -505,10 +509,12 @@
 
             els.uploadInput.addEventListener('change', handleFileUpload);
             els.importInput.addEventListener('change', handleProjectImport);
-            window.addEventListener('mousedown', handleMouseDown);
-            window.addEventListener('mousemove', handleMouseMove);
-            window.addEventListener('mouseup', handleMouseUp);
             
+            // SWITCH TO POINTER EVENTS FOR TABLET SUPPORT
+            window.addEventListener('pointerdown', handlePointerDown);
+            window.addEventListener('pointermove', handlePointerMove);
+            window.addEventListener('pointerup', handlePointerUp);
+            // Keep scroll events as is
             els.leftViewport.addEventListener('scroll', () => handleScroll('left'));
             els.rightViewport.addEventListener('scroll', () => handleScroll('right'));
             
@@ -879,7 +885,7 @@
             if (!state.annotations[docId] || !state.annotations[docId][pageNum]) return;
 
             const strokes = state.annotations[docId][pageNum];
-            const threshold = 0.0002; // Detection threshold
+            const threshold = 0.0002; 
 
             let foundIndex = -1;
 
@@ -899,12 +905,9 @@
             }
 
             if (foundIndex !== -1) {
-                // Remove the stroke immediately
                 strokes.splice(foundIndex, 1);
-                // Re-render immediately to show feedback
                 renderAnnotations(side);
-                // Note: We do NOT save to DB here. We save on MouseUp to batch operations.
-                return true; // Returned true if a stroke was deleted
+                return true; 
             }
             return false;
         }
@@ -962,9 +965,12 @@
             };
         }
 
-        function handleMouseDown(e) {
+        function handlePointerDown(e) {
             if (e.target.closest('.link-marker')) return;
             if (e.target.closest('button') || e.target.closest('input')) return;
+
+            // FIX: Prevent default touch actions handled by browser (scrolling)
+            e.target.setPointerCapture(e.pointerId);
 
             const leftRect = els.leftWrapper.getBoundingClientRect();
             const rightRect = els.rightWrapper.getBoundingClientRect();
@@ -983,6 +989,7 @@
 
             if (state.appMode === 'linking') {
                 state.drawing.active = true;
+                state.drawing.pointerId = e.pointerId;
                 state.drawing.startSide = clickedSide;
                 const pos = getMousePosInViewport(e, clickedSide);
                 state.drawing.startPoint = { x: e.clientX, y: e.clientY }; 
@@ -996,24 +1003,31 @@
                 updatePathVisual();
             } 
             else if (state.appMode === 'annotation') {
-                if (state.annoTool === 'eraser-stroke') {
-                    // SWIPE MODE: Start drag
-                    state.drawing.active = true;
-                    state.drawing.startSide = clickedSide;
-                    const pos = getMousePosInViewport(e, clickedSide);
-                    deleteStrokeAt(clickedSide, pos.x, pos.y); // Try delete immediately on click
-                } else {
-                    // DRAW MODE
-                    state.drawing.active = true;
-                    state.drawing.startSide = clickedSide;
-                    const pos = getMousePosInViewport(e, clickedSide);
-                    startAnnotationStroke(clickedSide, pos.x, pos.y);
+                // FIX FOR PENTAB: If pointerType is pen, allow drawing regardless of button (e.button)
+                // Mouse users still need Left Click (e.button === 0)
+                if (e.pointerType === 'pen' || e.button === 0) {
+                     if (state.annoTool === 'eraser-stroke') {
+                        // FIX: SWIPE MODE - Do NOT delete on click. Just activate drag.
+                        state.drawing.active = true;
+                        state.drawing.pointerId = e.pointerId;
+                        state.drawing.startSide = clickedSide;
+                        // REMOVED: deleteStrokeAt(clickedSide, pos.x, pos.y);
+                    } else {
+                        state.drawing.active = true;
+                        state.drawing.pointerId = e.pointerId;
+                        state.drawing.startSide = clickedSide;
+                        const pos = getMousePosInViewport(e, clickedSide);
+                        startAnnotationStroke(clickedSide, pos.x, pos.y);
+                    }
                 }
             }
         }
 
-        function handleMouseMove(e) {
+        function handlePointerMove(e) {
             if (!state.drawing.active) return;
+            // Only process move if pointer ID matches
+            if (state.drawing.pointerId !== e.pointerId) return;
+
             const side = state.drawing.startSide;
             if (!side) return;
 
@@ -1034,8 +1048,10 @@
             }
         }
 
-        async function handleMouseUp(e) {
+        async function handlePointerUp(e) {
             if (!state.drawing.active) return;
+            if (state.drawing.pointerId !== e.pointerId) return;
+
             const side = state.drawing.startSide;
 
             if (state.appMode === 'linking') {
@@ -1078,16 +1094,20 @@
                 if (!validLink && endSide) showModal("Invalid Link", "Links must start and end on different pages.");
             } 
             else if (state.appMode === 'annotation') {
-                if (state.annoTool === 'eraser-stroke') {
-                    // SWIPE MODE: Save once at the end
-                    const docId = state.view[side].docId;
-                    if (docId) saveAnnotationsToDB(docId, state.annotations[docId]);
-                } else {
-                    // DRAW MODE
+                if (state.annoTool !== 'eraser-stroke') {
                     finishAnnotationStroke(side);
+                } else {
+                    // Save for stroke eraser only if something was actually deleted?
+                    // We are relying on `deleteStrokeAt` returning true, 
+                    // but since we want to save the *state of deletions* (or lack thereof) on mouseup,
+                    // we can just save the current state which has already been modified by `deleteStrokeAt`.
+                    const docId = state.view[side].docId;
+                    if(docId) saveAnnotationsToDB(docId, state.annotations[docId]);
                 }
                 state.drawing.active = false;
             }
+            
+            e.target.releasePointerCapture(e.pointerId);
         }
 
         function updatePathVisual() {
@@ -1199,7 +1219,7 @@
             document.body.appendChild(downloadAnchorNode); 
             downloadAnchorNode.click();
             downloadAnchorNode.remove();
-            showModal("Export Success", "Project saved! \n\nNote: Annotations are included. You will need to re-upload the PDF files to view them.");
+            showModal("Export Success", "Project saved! \n\nNote: Annotations are included. You will need to re-upload PDF files to view them.");
         }
 
         function handleProjectImport(e) {

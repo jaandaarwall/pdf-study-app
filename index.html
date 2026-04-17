@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF Linker Studio (Overwrite Support)</title>
+    <title>PDF Linker Studio (Fixed Resizing)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- PDF.js -->
@@ -58,6 +58,8 @@
         body.anno-pixel-eraser .annotation-canvas { cursor: crosshair; }
         body.anno-stroke-eraser .annotation-canvas { cursor: grab; }
         body.anno-stroke-eraser .annotation-canvas:active { cursor: grabbing; }
+        body.anno-select .annotation-canvas { cursor: default; }
+        body.anno-select .annotation-canvas:active { cursor: grabbing; }
 
         /* Link Button Marker */
         .link-marker {
@@ -166,7 +168,10 @@
             <!-- Annotation Sub-Tools -->
             <div id="anno-tools" class="hidden flex items-center gap-1 bg-white border border-gray-200 rounded-lg px-2 py-1 shadow-sm">
                 <!-- Tools -->
-                <button id="tool-pen" class="w-8 h-8 rounded flex items-center justify-center text-blue-600 bg-blue-50 transition-colors" onclick="setAnnoTool('pen')" title="Pen">
+                <button id="tool-select" class="w-8 h-8 rounded flex items-center justify-center text-gray-500 hover:bg-gray-100 transition-colors" onclick="setAnnoTool('select')" title="Select / Group / Move / Resize">
+                    <i class="fa-solid fa-object-group"></i>
+                </button>
+                <button id="tool-pen" class="w-8 h-8 rounded flex items-center justify-center text-gray-500 hover:bg-gray-100 transition-colors" onclick="setAnnoTool('pen')" title="Pen">
                     <i class="fa-solid fa-pen-nib"></i>
                 </button>
                 <button id="tool-eraser-pixel" class="w-8 h-8 rounded flex items-center justify-center text-gray-500 hover:bg-gray-100 transition-colors" onclick="setAnnoTool('eraser-pixel')" title="Pixel Eraser">
@@ -175,6 +180,14 @@
                 <button id="tool-eraser-stroke" class="w-8 h-8 rounded flex items-center justify-center text-gray-500 hover:bg-gray-100 transition-colors" onclick="setAnnoTool('eraser-stroke')" title="Stroke Eraser (Swipe to Delete)">
                     <i class="fa-solid fa-ban"></i>
                 </button>
+                
+                <div class="w-px h-5 bg-gray-300 mx-1"></div>
+
+                <!-- Image Tool -->
+                <button onclick="document.getElementById('image-upload').click()" class="w-8 h-8 rounded flex items-center justify-center text-purple-600 hover:bg-purple-50 transition-colors" title="Add Image">
+                    <i class="fa-regular fa-image"></i>
+                </button>
+                <input type="file" id="image-upload" class="hidden" accept="image/*">
                 
                 <div class="w-px h-5 bg-gray-300 mx-1"></div>
 
@@ -424,6 +437,8 @@
             annoColor: '#ef4444',
             annoThickness: 5, 
             annotations: {}, 
+            imageCache: {}, 
+            lastActiveSide: 'left',
             drawing: {
                 active: false,
                 startSide: null, 
@@ -432,12 +447,31 @@
                 currentPoint: { x: 0, y: 0 },
                 pointerId: null 
             },
+            selection: {
+                active: false,
+                side: null,
+                mode: 'idle', // 'idle', 'marquee', 'dragging', 'resizing'
+                
+                // Marquee Data
+                marqueeStart: null, // {x, y}
+                marqueeCurrent: null, // {x, y}
+
+                // Selection Data (Group)
+                selectedImages: [], // Array of image objects (references)
+                selectedStrokes: [], // Array of stroke objects (references)
+                boundingBox: null, // {x, y, w, h} of the group
+
+                // Drag/Resize State
+                dragStartMouse: null, // {x, y}
+                dragStartPositions: null, // Map of original positions
+            },
             highlightRequest: null,
-            projectFileHandle: null // NEW: Stores the reference to the saved file
+            projectFileHandle: null
         };
 
         const els = {
             uploadInput: document.getElementById('pdf-upload-input'),
+            imageInput: document.getElementById('image-upload'),
             docList: document.getElementById('doc-list'),
             emptyMsg: document.getElementById('empty-state-msg'),
             loadingSpinner: document.getElementById('loading-spinner'),
@@ -455,6 +489,7 @@
             modeLinkBtn: document.getElementById('mode-link-btn'),
             modeAnnoBtn: document.getElementById('mode-anno-btn'),
             annoTools: document.getElementById('anno-tools'),
+            toolSelect: document.getElementById('tool-select'),
             toolPen: document.getElementById('tool-pen'),
             toolEraserPixel: document.getElementById('tool-eraser-pixel'),
             toolEraserStroke: document.getElementById('tool-eraser-stroke'),
@@ -473,6 +508,7 @@
         const handleScroll = debounce((side) => {
             const viewport = els[side + 'Viewport'];
             state.view[side].scrollTop = viewport.scrollTop;
+            state.lastActiveSide = side;
             saveSettings();
             renderMarkersForView(side);
         }, 200);
@@ -488,6 +524,18 @@
                     
                     state.links = savedData.links;
                     state.annotations = savedData.annotations || {};
+
+                    Object.values(state.annotations).forEach(pages => {
+                        Object.values(pages).forEach(pageData => {
+                            if(pageData.images) {
+                                pageData.images.forEach(img => {
+                                    const imageObj = new Image();
+                                    imageObj.src = img.src;
+                                    state.imageCache[img.id] = imageObj;
+                                });
+                            }
+                        });
+                    });
 
                     for (const dbDoc of savedData.documents) {
                         try {
@@ -510,6 +558,7 @@
                         const sView = savedData.settings.view;
                         if (sView.left.docId && state.documents[sView.left.docId]) {
                             state.view.left = { ...sView.left, scale: 1.0, scrollTop: sView.left.scrollTop || 0 };
+                            if(state.view.left.docId) state.lastActiveSide = 'left';
                         }
                         if (sView.right.docId && state.documents[sView.right.docId]) {
                             state.view.right = { ...sView.right, scale: 1.0, scrollTop: sView.right.scrollTop || 0 };
@@ -538,11 +587,14 @@
             }
 
             els.uploadInput.addEventListener('change', handleFileUpload);
+            els.imageInput.addEventListener('change', handleImageUpload);
             els.importInput.addEventListener('change', handleProjectImport);
             
+            window.addEventListener('paste', handlePaste);
             window.addEventListener('pointerdown', handlePointerDown);
             window.addEventListener('pointermove', handlePointerMove);
             window.addEventListener('pointerup', handlePointerUp);
+            window.addEventListener('keydown', handleKeyDown);
             els.leftViewport.addEventListener('scroll', () => handleScroll('left'));
             els.rightViewport.addEventListener('scroll', () => handleScroll('right'));
             
@@ -561,7 +613,7 @@
             state.appMode = mode;
             if (save) saveSettings();
 
-            document.body.classList.remove('linking-mode', 'annotation-mode', 'anno-pen', 'anno-pixel-eraser', 'anno-stroke-eraser');
+            document.body.classList.remove('linking-mode', 'annotation-mode', 'anno-pen', 'anno-pixel-eraser', 'anno-stroke-eraser', 'anno-select');
 
             [els.modeNavBtn, els.modeLinkBtn, els.modeAnnoBtn].forEach(btn => {
                 btn.classList.remove('bg-white', 'shadow-sm', 'text-gray-800');
@@ -590,13 +642,17 @@
             state.annoTool = tool;
             if (save) saveSettings();
 
-            [els.toolPen, els.toolEraserPixel, els.toolEraserStroke].forEach(btn => {
-                btn.classList.remove('bg-blue-50', 'text-blue-600');
+            [els.toolSelect, els.toolPen, els.toolEraserPixel, els.toolEraserStroke].forEach(btn => {
+                btn.classList.remove('bg-blue-50', 'text-blue-600', 'bg-purple-50', 'text-purple-600');
                 btn.classList.add('text-gray-500');
             });
-            document.body.classList.remove('anno-pen', 'anno-pixel-eraser', 'anno-stroke-eraser');
+            document.body.classList.remove('anno-pen', 'anno-pixel-eraser', 'anno-stroke-eraser', 'anno-select');
 
-            if (tool === 'pen') {
+            if (tool === 'select') {
+                els.toolSelect.classList.add('bg-purple-50', 'text-purple-600');
+                els.toolSelect.classList.remove('text-gray-500');
+                document.body.classList.add('anno-select');
+            } else if (tool === 'pen') {
                 els.toolPen.classList.add('bg-blue-50', 'text-blue-600');
                 els.toolPen.classList.remove('text-gray-500');
                 document.body.classList.add('anno-pen');
@@ -617,8 +673,10 @@
                 state.documents = {};
                 state.links = [];
                 state.annotations = {};
+                state.imageCache = {};
                 state.view.left = { docId: null, pageNum: 1, scale: 1.0, scrollTop: 0 };
                 state.view.right = { docId: null, pageNum: 1, scale: 1.0, scrollTop: 0 };
+                state.lastActiveSide = 'left';
                 renderDocList();
                 renderPage('left');
                 renderPage('right');
@@ -659,6 +717,93 @@
             }
             renderDocList();
             els.uploadInput.value = ''; 
+        }
+
+        // --- Image Handling ---
+
+        async function handleImageUpload(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            addImageToSide(file, state.lastActiveSide);
+            e.target.value = '';
+        }
+
+        function handlePaste(e) {
+            if (state.appMode !== 'annotation') return;
+
+            const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+            for (let item of items) {
+                if (item.kind === 'file' && item.type.startsWith('image/')) {
+                    const blob = item.getAsFile();
+                    let targetSide = state.lastActiveSide; 
+                    const wrapper = e.target.closest('.pdf-canvas-container') || e.target.closest('#left-canvas-wrapper') || e.target.closest('#right-canvas-wrapper');
+                    
+                    if (wrapper) {
+                        if (wrapper.id === 'left-canvas-wrapper' || wrapper.id === 'left-viewport') targetSide = 'left';
+                        else if (wrapper.id === 'right-canvas-wrapper' || wrapper.id === 'right-viewport') targetSide = 'right';
+                    }
+
+                    if (state.view[targetSide] && state.view[targetSide].docId) {
+                        addImageToSide(blob, targetSide);
+                    } else {
+                        const otherSide = targetSide === 'left' ? 'right' : 'left';
+                        if (state.view[otherSide].docId) addImageToSide(blob, otherSide);
+                    }
+                    e.preventDefault();
+                    return;
+                }
+            }
+        }
+
+        async function addImageToSide(fileOrBlob, side) {
+            if (!side || !state.view[side].docId) return;
+
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const base64 = event.target.result;
+                const id = 'img_' + Date.now();
+                
+                const imgObj = new Image();
+                imgObj.src = base64;
+                imgObj.onload = () => {
+                    const canvasWidth = els[side + 'Canvas'].width;
+                    const newW = 0.3;
+                    const aspect = imgObj.height / imgObj.width;
+                    const newH = newW * aspect;
+
+                    const newImage = {
+                        id,
+                        src: base64,
+                        x: 0.35, 
+                        y: 0.35,
+                        w: newW,
+                        h: newH
+                    };
+
+                    const docId = state.view[side].docId;
+                    const pageNum = state.view[side].pageNum;
+                    if (!state.annotations[docId]) state.annotations[docId] = {};
+                    if (!state.annotations[docId][pageNum]) state.annotations[docId][pageNum] = { strokes: [], images: [] };
+                    
+                    state.annotations[docId][pageNum].images.push(newImage);
+                    state.imageCache[id] = imgObj;
+                    
+                    // Auto-select single image
+                    clearSelection();
+                    state.selection = {
+                        active: true,
+                        side: side,
+                        mode: 'idle',
+                        selectedImages: [newImage],
+                        selectedStrokes: [],
+                        boundingBox: { x: newImage.x, y: newImage.y, w: newImage.w, h: newImage.h }
+                    };
+
+                    saveAnnotationsToDB(docId, state.annotations[docId]);
+                    renderAnnotations(side);
+                }
+            };
+            reader.readAsDataURL(fileOrBlob);
         }
 
         function renderDocList() {
@@ -711,6 +856,8 @@
             state.view[side].docId = docId;
             state.view[side].pageNum = 1;
             state.view[side].scrollTop = 0; 
+            state.lastActiveSide = side;
+            clearSelection();
             saveSettings(); 
             if (render) {
                 renderPage(side);
@@ -771,12 +918,48 @@
             if (newPage >= 1 && newPage <= doc.pageCount) {
                 viewState.pageNum = newPage;
                 viewState.scrollTop = 0; 
+                state.lastActiveSide = side;
+                clearSelection();
                 saveSettings(); 
                 renderPage(side);
             }
         }
 
-        // --- Annotation Logic ---
+        // --- Selection & Group Logic ---
+
+        function clearSelection() {
+            state.selection = {
+                active: false,
+                side: null,
+                mode: 'idle',
+                marqueeStart: null,
+                marqueeCurrent: null,
+                selectedImages: [],
+                selectedStrokes: [],
+                boundingBox: null
+            };
+        }
+
+        function getStrokeBounds(stroke) {
+            if (!stroke.points || stroke.points.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            stroke.points.forEach(p => {
+                if(p.x < minX) minX = p.x;
+                if(p.x > maxX) maxX = p.x;
+                if(p.y < minY) minY = p.y;
+                if(p.y > maxY) maxY = p.y;
+            });
+            return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+        }
+
+        function rectsIntersect(r1, r2) {
+            return !(r2.x > r1.x + r1.w || 
+                     r2.x + r2.w < r1.x || 
+                     r2.y > r1.y + r1.h || 
+                     r2.y + r2.h < r1.y);
+        }
+
+        // --- Annotation & Image Rendering Logic ---
 
         function renderAnnotations(side) {
             const viewState = state.view[side];
@@ -787,10 +970,18 @@
 
             ctx.clearRect(0, 0, width, height);
 
-            if (!state.annotations[viewState.docId]) return;
-            const strokes = state.annotations[viewState.docId][viewState.pageNum] || [];
+            const pageData = (state.annotations[viewState.docId] && state.annotations[viewState.docId][viewState.pageNum]) || { strokes: [], images: [] };
+            
+            // 1. Draw Images
+            pageData.images.forEach(img => {
+                const imgObj = state.imageCache[img.id];
+                if (imgObj) {
+                    ctx.drawImage(imgObj, img.x * width, img.y * height, img.w * width, img.h * height);
+                }
+            });
 
-            strokes.forEach(stroke => {
+            // 2. Draw Strokes
+            pageData.strokes.forEach(stroke => {
                 ctx.beginPath();
                 ctx.lineCap = 'round';
                 ctx.lineJoin = 'round';
@@ -815,6 +1006,45 @@
                 ctx.stroke();
             });
             ctx.globalCompositeOperation = 'source-over';
+
+            // 3. Draw Marquee Selection (Dotted Blue Line)
+            if (state.selection.active && state.selection.side === side && state.selection.mode === 'marquee') {
+                const start = state.selection.marqueeStart;
+                const curr = state.selection.marqueeCurrent;
+                const x = Math.min(start.x, curr.x) * width;
+                const y = Math.min(start.y, curr.y) * height;
+                const w = Math.abs(curr.x - start.x) * width;
+                const h = Math.abs(curr.y - start.y) * height;
+
+                ctx.strokeStyle = '#3b82f6';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([5, 5]);
+                ctx.strokeRect(x, y, w, h);
+                ctx.fillStyle = 'rgba(59, 130, 246, 0.1)';
+                ctx.fillRect(x, y, w, h);
+                ctx.setLineDash([]);
+            }
+
+            // 4. Draw Group Selection Bounding Box
+            if (state.selection.active && state.selection.side === side && (state.selection.mode === 'idle' || state.selection.mode === 'dragging' || state.selection.mode === 'resizing')) {
+                const bbox = state.selection.boundingBox;
+                if (bbox) {
+                    const sx = bbox.x * width;
+                    const sy = bbox.y * height;
+                    const sw = bbox.w * width;
+                    const sh = bbox.h * height;
+
+                    // Border
+                    ctx.strokeStyle = '#3b82f6';
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([]);
+                    ctx.strokeRect(sx, sy, sw, sh);
+
+                    // Resize Handle (Bottom Right)
+                    ctx.fillStyle = '#3b82f6';
+                    ctx.fillRect(sx + sw - 8, sy + sh - 8, 16, 16);
+                }
+            }
         }
 
         function startAnnotationStroke(side, x, y) {
@@ -822,7 +1052,7 @@
             const pageNum = state.view[side].pageNum;
             
             if (!state.annotations[docId]) state.annotations[docId] = {};
-            if (!state.annotations[docId][pageNum]) state.annotations[docId][pageNum] = [];
+            if (!state.annotations[docId][pageNum]) state.annotations[docId][pageNum] = { strokes: [], images: [] };
 
             const normalizedSize = state.annoThickness / 1000; 
 
@@ -833,7 +1063,7 @@
                 points: [{ x, y }]
             };
 
-            state.annotations[docId][pageNum].push(newStroke);
+            state.annotations[docId][pageNum].strokes.push(newStroke);
             
             const canvas = els[side + 'AnnoCanvas'];
             const ctx = canvas.getContext('2d');
@@ -859,7 +1089,7 @@
         function continueAnnotationStroke(side, x, y) {
             const docId = state.view[side].docId;
             const pageNum = state.view[side].pageNum;
-            const strokes = state.annotations[docId][pageNum];
+            const strokes = state.annotations[docId][pageNum].strokes;
             const currentStroke = strokes[strokes.length - 1];
             
             currentStroke.points.push({ x, y });
@@ -912,7 +1142,7 @@
             
             if (!state.annotations[docId] || !state.annotations[docId][pageNum]) return;
 
-            const strokes = state.annotations[docId][pageNum];
+            const strokes = state.annotations[docId][pageNum].strokes;
             const threshold = 0.0002; 
 
             let foundIndex = -1;
@@ -940,8 +1170,36 @@
             return false;
         }
 
-        // --- Undo / Clear Logic ---
-        
+        function handleKeyDown(e) {
+            if ((e.key === 'Delete' || e.key === 'Backspace') && state.selection.active) {
+                const side = state.selection.side;
+                const docId = state.view[side].docId;
+                const pageNum = state.view[side].pageNum;
+                
+                if (!state.annotations[docId] || !state.annotations[docId][pageNum]) return;
+                const pageData = state.annotations[docId][pageNum];
+
+                // Delete Images
+                state.selection.selectedImages.forEach(imgObj => {
+                    const idx = pageData.images.indexOf(imgObj);
+                    if(idx > -1) {
+                        pageData.images.splice(idx, 1);
+                        delete state.imageCache[imgObj.id];
+                    }
+                });
+
+                // Delete Strokes
+                state.selection.selectedStrokes.forEach(strokeObj => {
+                    const idx = pageData.strokes.indexOf(strokeObj);
+                    if(idx > -1) pageData.strokes.splice(idx, 1);
+                });
+
+                clearSelection();
+                saveAnnotationsToDB(docId, state.annotations[docId]);
+                renderAnnotations(side);
+            }
+        }
+
         function undoLastStroke() {
             const docId = state.view.left.docId || state.view.right.docId;
             if (!docId) return;
@@ -952,8 +1210,9 @@
             let changed = false;
 
             const undoOnView = (side, dId, pNum) => {
-                if (state.annotations[dId] && state.annotations[dId][pNum] && state.annotations[dId][pNum].length > 0) {
-                    state.annotations[dId][pNum].pop();
+                const pageData = state.annotations[dId] && state.annotations[dId][pNum];
+                if (pageData && pageData.strokes && pageData.strokes.length > 0) {
+                    pageData.strokes.pop();
                     saveAnnotationsToDB(dId, state.annotations[dId]);
                     renderAnnotations(side);
                     changed = true;
@@ -970,11 +1229,11 @@
         }
 
         function clearCurrentPageAnnotations() {
-            if(!confirm("Clear all annotations on the current page(s)?")) return;
+            if(!confirm("Clear all annotations and images on the current page(s)?")) return;
 
             const clearView = (side, dId, pNum) => {
                 if (dId && state.annotations[dId]) {
-                    state.annotations[dId][pNum] = [];
+                    state.annotations[dId][pNum] = { strokes: [], images: [] };
                     saveAnnotationsToDB(dId, state.annotations[dId]);
                     renderAnnotations(side);
                 }
@@ -983,18 +1242,13 @@
             clearView('right', state.view.right.docId, state.view.right.pageNum);
         }
 
-        // --- PDF Manipulation (Insert/Duplicate) ---
+        // --- PDF Manipulation ---
 
         async function insertPage(side, type) {
             const docId = state.view[side].docId;
-            
-            if (!docId) { 
-                showModal("Error", "No document loaded in this viewport."); 
-                return; 
-            }
+            if (!docId) { showModal("Error", "No document loaded."); return; }
 
-            const insertIndex = state.view[side].pageNum; // Insert AFTER this page
-
+            const insertIndex = state.view[side].pageNum;
             els.loadingSpinner.classList.remove('hidden');
             els.loadingSpinner.querySelector('span').innerText = "Processing PDF...";
 
@@ -1067,23 +1321,21 @@
                     fileBlob: newBlob
                 });
 
-                // Switch to new page for convenience
                 state.view[side].pageNum = insertIndex + 1;
                 
                 renderPage(side);
                 renderDocList();
-
-                showModal("Success", `${type === 'blank' ? 'Blank' : 'Duplicated'} page added at position ${insertIndex + 1}.`);
+                showModal("Success", `${type === 'blank' ? 'Blank' : 'Duplicated'} page added.`);
 
             } catch (err) {
                 console.error(err);
-                showModal("Error", "Failed to process PDF: " + err.message);
+                showModal("Error", "Failed to process PDF.");
             } finally {
                 els.loadingSpinner.classList.add('hidden');
             }
         }
 
-        // --- Project Save/Load (Smart Overwrite) ---
+        // --- Project Save/Load ---
 
         async function exportProject() {
             const docKeys = Object.keys(state.documents);
@@ -1098,9 +1350,8 @@
             try {
                 const zip = new JSZip();
 
-                // Create metadata file
                 const metadata = {
-                    version: "2.0",
+                    version: "2.1", 
                     timestamp: Date.now(),
                     links: state.links,
                     annotations: state.annotations,
@@ -1112,14 +1363,12 @@
                         annoColor: state.annoColor,
                         annoThickness: state.annoThickness
                     },
-                    documents: {}
+                    documents: {} 
                 };
 
-                // Add PDFs to ZIP
                 for (const id of docKeys) {
                     const doc = state.documents[id];
                     const safeFilename = `${id}.pdf`;
-                    
                     metadata.documents[id] = {
                         id: doc.id,
                         name: doc.name,
@@ -1127,53 +1376,39 @@
                         thumbnail: doc.thumbnail,
                         filename: safeFilename
                     };
-
                     zip.file(safeFilename, doc.file);
                 }
 
                 zip.file("project.json", JSON.stringify(metadata, null, 2));
 
-                // Generate ZIP blob in memory
                 const content = await zip.generateAsync({type:"blob"});
                 
-                // --- SMART SAVE LOGIC ---
                 let handle = state.projectFileHandle;
                 
-                // If we don't have a handle, ask user where to save (allow overwriting existing file)
                 if (!handle) {
                     try {
-                        // Check browser support
                         if (window.showSaveFilePicker) {
                             handle = await window.showSaveFilePicker({
                                 suggestedName: 'pdf_linker_project.zip',
-                                types: [{
-                                    description: 'Project Archive',
-                                    accept: {'application/zip': ['.zip']},
-                                }],
+                                types: [{ description: 'Project Archive', accept: {'application/zip': ['.zip']}}],
                             });
                         } else {
                             throw new Error("API not supported");
                         }
                     } catch (err) {
-                        // User canceled or API not supported
                         if (err.name === 'AbortError') {
                             els.loadingSpinner.classList.add('hidden');
                             return; 
                         }
-                        // Fallback to standard download if API fails or missing
                         throw new Error("Use Standard Download");
                     }
                 }
 
-                // Try to write to the handle
                 try {
                     const writable = await handle.createWritable();
                     await writable.write(content);
                     await writable.close();
-                    
-                    // Remember this handle for instant saves next time
                     state.projectFileHandle = handle;
-                    
                     showModal("Saved", "Project saved successfully!");
                 } catch (writeErr) {
                     console.error(writeErr);
@@ -1182,16 +1417,9 @@
 
             } catch (err) {
                 console.error("Save Error:", err);
-                // Fallback: Standard Download (FileSaver.js)
+                const content = await zip.generateAsync({type:"blob"}); 
                 saveAs(content, "pdf_linker_project.zip");
-                
-                let msg = "Project downloaded as new file.";
-                if (err.message === "Use Standard Download") {
-                    msg += " (Your browser doesn't support file overwriting. Please manually replace the old file.)";
-                } else {
-                    msg += " (Error writing to selected file. Downloaded instead.)";
-                }
-                showModal("Download Complete", msg);
+                showModal("Download Complete", "Project downloaded.");
             } finally {
                 els.loadingSpinner.classList.add('hidden');
             }
@@ -1205,25 +1433,20 @@
             els.loadingSpinner.querySelector('span').innerText = "Loading Project...";
 
             try {
-                // Check if ZIP or JSON (old format)
                 const isZip = file.name.endsWith('.zip');
 
                 if (isZip) {
                     const zip = await JSZip.loadAsync(file);
-                    
-                    // 1. Load Metadata
                     const metaFile = zip.file("project.json");
                     if (!metaFile) throw new Error("Invalid ZIP: project.json not found.");
                     
                     const metaString = await metaFile.async("string");
                     const metadata = JSON.parse(metaString);
 
-                    // 2. Load Documents from ZIP
                     for (const [id, docInfo] of Object.entries(metadata.documents)) {
                         const pdfFile = zip.file(docInfo.filename);
                         if (pdfFile) {
                             const blob = await pdfFile.async("blob");
-                            
                             const arrayBuffer = await blob.arrayBuffer();
                             const pdfDoc = await pdfjsLib.getDocument(arrayBuffer).promise;
 
@@ -1235,18 +1458,30 @@
                                 pageCount: pdfDoc.numPages,
                                 thumbnail: docInfo.thumbnail
                             };
-
-                            await saveDocumentToDB({
-                                id: id,
-                                name: docInfo.name,
-                                pageCount: docInfo.pageCount,
-                                thumbnail: docInfo.thumbnail,
-                                fileBlob: blob
-                            });
+                            await saveDocumentToDB({ id: id, name: docInfo.name, pageCount: docInfo.pageCount, thumbnail: docInfo.thumbnail, fileBlob: blob });
                         }
                     }
 
-                    // 3. Restore Links
+                    if (metadata.annotations) {
+                        state.annotations = metadata.annotations;
+                        state.imageCache = {}; 
+
+                        Object.values(state.annotations).forEach(pages => {
+                            Object.values(pages).forEach(pageData => {
+                                if(pageData.images) {
+                                    pageData.images.forEach(img => {
+                                        const imageObj = new Image();
+                                        imageObj.src = img.src;
+                                        state.imageCache[img.id] = imageObj;
+                                    });
+                                }
+                            });
+                        });
+                        for (const [docId, data] of Object.entries(state.annotations)) {
+                            saveAnnotationsToDB(docId, data);
+                        }
+                    }
+
                     if (metadata.links) {
                         state.links = metadata.links;
                         for (const link of state.links) {
@@ -1254,15 +1489,6 @@
                         }
                     }
 
-                    // 4. Restore Annotations
-                    if (metadata.annotations) {
-                        state.annotations = metadata.annotations;
-                        for (const [docId, data] of Object.entries(state.annotations)) {
-                            saveAnnotationsToDB(docId, data);
-                        }
-                    }
-
-                    // 5. Restore Settings
                     if (metadata.settings) {
                         const s = metadata.settings;
                         state.view = s.view;
@@ -1274,49 +1500,13 @@
                         setAppMode(state.appMode, false);
                         setAnnoTool(state.annoTool, false);
                         els.colorPicker.value = state.annoColor;
-                        els.thicknessPicker.value = state.annoThickness;
-                        
+                        els.thicknessPicker.value = s.annoThickness;
                         saveSettings(); 
                     }
-                    
-                    // NOTE: We cannot get a FileHandle from a standard <input> in all browsers easily,
-                    // so we reset the projectFileHandle. The user will have to re-select the file 
-                    // on first save, enabling overwrite.
                     state.projectFileHandle = null;
-
-                    showModal("Import Success", "Project loaded. Click Save to overwrite or create new file.");
-
+                    showModal("Import Success", "Project loaded from ZIP.");
                 } else {
-                    // Fallback for old JSON format
-                    const reader = new FileReader();
-                    reader.onload = async function(event) {
-                        try {
-                            const project = JSON.parse(event.target.result);
-                            if (!project.links || !project.documents) throw new Error("Invalid format");
-
-                            project.links.forEach(async link => {
-                                state.links.push(link);
-                                await saveLinkToDB(link);
-                            });
-                            
-                            if (project.annotations) {
-                                state.annotations = { ...state.annotations, ...project.annotations };
-                                Object.keys(project.annotations).forEach(docId => {
-                                    saveAnnotationsToDB(docId, project.annotations[docId]);
-                                });
-                            }
-                            
-                            let msg = "Legacy JSON Project loaded!\n\nPlease re-upload PDFs to activate them:\n";
-                            project.documents.forEach(d => msg += `- ${d.name}\n`);
-                            showModal("Project Imported", msg);
-                            renderMarkersForView('left');
-                            renderMarkersForView('right');
-
-                        } catch (err) {
-                            showModal("Import Error", "Failed to parse file.");
-                        }
-                    };
-                    reader.readAsText(file);
+                    showModal("Import Error", "Please use the ZIP export format.");
                 }
 
                 if (isZip) {
@@ -1327,14 +1517,14 @@
 
             } catch (err) {
                 console.error(err);
-                showModal("Import Error", "Failed to load project: " + err.message);
+                showModal("Import Error", "Failed to load project.");
             } finally {
                 els.loadingSpinner.classList.add('hidden');
             }
             e.target.value = '';
         }
 
-        // --- Interaction / Global Mouse Handlers ---
+        // --- Interaction / Global Mouse Handlers (FIXED RESIZING) ---
 
         function getMousePosInViewport(evt, side) {
             const rect = els[side + 'Wrapper'].getBoundingClientRect();
@@ -1365,6 +1555,8 @@
             if (!clickedSide) return;
             if (!state.view[clickedSide].docId) return;
 
+            state.lastActiveSide = clickedSide;
+
             if (state.appMode === 'linking') {
                 state.drawing.active = true;
                 state.drawing.pointerId = e.pointerId;
@@ -1381,15 +1573,86 @@
                 updatePathVisual();
             } 
             else if (state.appMode === 'annotation') {
-                if (e.pointerType === 'pen' || e.button === 0) {
+                state.drawing.active = true;
+                state.drawing.pointerId = e.pointerId;
+                state.drawing.startSide = clickedSide;
+
+                if (state.annoTool === 'select') {
+                    const pos = getMousePosInViewport(e, clickedSide);
+                    const pageData = state.annotations[state.view[clickedSide].docId]?.[state.view[clickedSide].pageNum];
+                    let actionTaken = false;
+
+                    // 1. Check for existing selection interaction (Resize Handle or Body)
+                    if (state.selection.active && state.selection.side === clickedSide) {
+                        const bbox = state.selection.boundingBox;
+                        // Check Resize Handle
+                        const handleSize = 0.02; // Normalized size
+                        const right = bbox.x + bbox.w;
+                        const bottom = bbox.y + bbox.h;
+                        
+                        if (pos.x >= right - handleSize && pos.x <= right + handleSize &&
+                            pos.y >= bottom - handleSize && pos.y <= bottom + handleSize) {
+                            
+                            state.selection.mode = 'resizing';
+                            state.selection.dragStartMouse = { x: pos.x, y: pos.y }; // Normalized
+                            // DEEP CLONE current positions to use as base
+                            state.selection.dragStartPositions = {
+                                bbox: { ...bbox },
+                                images: state.selection.selectedImages.map(img => ({ ...img })),
+                                strokes: state.selection.selectedStrokes.map(stk => ({ points: stk.points.map(p => ({...p})) }))
+                            };
+                            actionTaken = true;
+                        } 
+                        // Check Group Box Body (Drag)
+                        else if (pos.x >= bbox.x && pos.x <= bbox.x + bbox.w &&
+                                 pos.y >= bbox.y && pos.y <= bbox.y + bbox.h) {
+                            state.selection.mode = 'dragging';
+                            state.selection.dragStartMouse = { x: pos.x, y: pos.y };
+                            actionTaken = true;
+                        }
+                    }
+
+                    // 2. Check Individual Items (Only if not acting on group)
+                    if (!actionTaken && pageData) {
+                        // Check Images (Topmost first)
+                        if (pageData.images) {
+                            for (let i = pageData.images.length - 1; i >= 0; i--) {
+                                const img = pageData.images[i];
+                                if (pos.x >= img.x && pos.x <= img.x + img.w &&
+                                    pos.y >= img.y && pos.y <= img.y + img.h) {
+                                    clearSelection();
+                                    state.selection = {
+                                        active: true, side: clickedSide, mode: 'dragging',
+                                        selectedImages: [img],
+                                        selectedStrokes: [],
+                                        boundingBox: { x: img.x, y: img.y, w: img.w, h: img.h },
+                                        dragStartMouse: { x: pos.x, y: pos.y }
+                                    };
+                                    actionTaken = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    // 3. Start Marquee Selection (Click on Empty Space)
+                    if (!actionTaken) {
+                        clearSelection();
+                        state.selection = {
+                            active: true,
+                            side: clickedSide,
+                            mode: 'marquee',
+                            marqueeStart: pos,
+                            marqueeCurrent: pos
+                        };
+                    }
+                    
+                    renderAnnotations(clickedSide);
+
+                } else if (e.pointerType === 'pen' || e.button === 0) {
                      if (state.annoTool === 'eraser-stroke') {
-                        state.drawing.active = true;
-                        state.drawing.pointerId = e.pointerId;
                         state.drawing.startSide = clickedSide;
                     } else {
-                        state.drawing.active = true;
-                        state.drawing.pointerId = e.pointerId;
-                        state.drawing.startSide = clickedSide;
                         const pos = getMousePosInViewport(e, clickedSide);
                         startAnnotationStroke(clickedSide, pos.x, pos.y);
                     }
@@ -1409,11 +1672,81 @@
                 updatePathVisual();
             } 
             else if (state.appMode === 'annotation') {
-                if (state.annoTool === 'eraser-stroke') {
-                    const pos = getMousePosInViewport(e, side);
+                const pos = getMousePosInViewport(e, side);
+
+                if (state.annoTool === 'select') {
+                    if (state.selection.mode === 'marquee') {
+                        state.selection.marqueeCurrent = pos;
+                        renderAnnotations(side);
+                    }
+                    else if (state.selection.mode === 'dragging') {
+                        const dx = pos.x - state.selection.dragStartMouse.x;
+                        const dy = pos.y - state.selection.dragStartMouse.y;
+                        
+                        // Apply Delta to all selected items
+                        state.selection.selectedImages.forEach(img => {
+                            img.x += dx;
+                            img.y += dy;
+                        });
+                        state.selection.selectedStrokes.forEach(stk => {
+                            stk.points.forEach(p => {
+                                p.x += dx;
+                                p.y += dy;
+                            });
+                        });
+
+                        // Update Bounding Box
+                        state.selection.boundingBox.x += dx;
+                        state.selection.boundingBox.y += dy;
+
+                        state.selection.dragStartMouse = pos;
+                        renderAnnotations(side);
+                    }
+                    else if (state.selection.mode === 'resizing') {
+                        // --- RESIZING FIX START ---
+                        const originalState = state.selection.dragStartPositions;
+                        
+                        // 1. Calculate the new intended width based on Mouse X relative to the box origin
+                        const originX = originalState.bbox.x;
+                        const originY = originalState.bbox.y;
+                        
+                        // Ensure minimum width to avoid negative logic
+                        const newW = Math.max(0.01, pos.x - originX);
+                        
+                        // 2. Calculate Scale Factor based on Original Width
+                        const scaleX = newW / originalState.bbox.w;
+                        const scaleY = scaleX; // Maintain Aspect Ratio
+
+                        // 3. Apply Scale to Images
+                        state.selection.selectedImages.forEach((img, idx) => {
+                            const oldImg = originalState.images[idx];
+                            img.x = originX + (oldImg.x - originX) * scaleX;
+                            img.y = originY + (oldImg.y - originY) * scaleY;
+                            img.w = oldImg.w * scaleX;
+                            img.h = oldImg.h * scaleY;
+                        });
+
+                        // 4. Apply Scale to Strokes
+                        state.selection.selectedStrokes.forEach((stk, idx) => {
+                            const oldStk = originalState.strokes[idx];
+                            stk.points.forEach((p, pIdx) => {
+                                const oldP = oldStk.points[pIdx];
+                                p.x = originX + (oldP.x - originX) * scaleX;
+                                p.y = originY + (oldP.y - originY) * scaleY;
+                            });
+                        });
+
+                        // 5. Update Bounding Box to match mouse
+                        state.selection.boundingBox.w = newW;
+                        state.selection.boundingBox.h = originalState.bbox.h * scaleY;
+                        // --- RESIZING FIX END ---
+                        
+                        renderAnnotations(side);
+                    }
+                } 
+                else if (state.annoTool === 'eraser-stroke') {
                     deleteStrokeAt(side, pos.x, pos.y);
                 } else {
-                    const pos = getMousePosInViewport(e, side);
                     continueAnnotationStroke(side, pos.x, pos.y);
                 }
             }
@@ -1424,7 +1757,6 @@
             if (state.drawing.pointerId !== e.pointerId) return;
 
             const side = state.drawing.startSide;
-
             if (state.appMode === 'linking') {
                 const leftRect = els.leftWrapper.getBoundingClientRect();
                 const rightRect = els.rightWrapper.getBoundingClientRect();
@@ -1459,13 +1791,100 @@
                         renderMarkersForView(endSide);
                     }
                 }
+                
                 state.drawing.active = false;
                 els.currentPath.style.display = 'none';
                 els.currentPath.setAttribute('d', '');
+
                 if (!validLink && endSide) showModal("Invalid Link", "Links must start and end on different pages.");
             } 
             else if (state.appMode === 'annotation') {
-                if (state.annoTool !== 'eraser-stroke') {
+                if (state.annoTool === 'select') {
+                    // If finishing marquee, calculate selection
+                    if (state.selection.mode === 'marquee') {
+                        const start = state.selection.marqueeStart;
+                        const curr = state.selection.marqueeCurrent;
+                        
+                        // Normalize rect
+                        const selRect = {
+                            x: Math.min(start.x, curr.x),
+                            y: Math.min(start.y, curr.y),
+                            w: Math.abs(curr.x - start.x),
+                            h: Math.abs(curr.y - start.y)
+                        };
+
+                        if (selRect.w > 0.001 && selRect.h > 0.001) {
+                            const docId = state.view[side].docId;
+                            const pageNum = state.view[side].pageNum;
+                            const pageData = state.annotations[docId]?.[pageNum];
+
+                            if (pageData) {
+                                const selectedImgs = [];
+                                const selectedStks = [];
+                                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                                let hasSelection = false;
+
+                                // Check Images
+                                if (pageData.images) {
+                                    pageData.images.forEach(img => {
+                                        const bounds = { x: img.x, y: img.y, w: img.w, h: img.h };
+                                        if (rectsIntersect(selRect, bounds)) {
+                                            selectedImgs.push(img);
+                                            hasSelection = true;
+                                            if(img.x < minX) minX = img.x;
+                                            if(img.y < minY) minY = img.y;
+                                            if(img.x + img.w > maxX) maxX = img.x + img.w;
+                                            if(img.y + img.h > maxY) maxY = img.y + img.h;
+                                        }
+                                    });
+                                }
+
+                                // Check Strokes
+                                if (pageData.strokes) {
+                                    pageData.strokes.forEach(stk => {
+                                        // Skip eraser strokes
+                                        if (stk.tool === 'eraser-pixel') return;
+
+                                        const bounds = getStrokeBounds(stk);
+                                        if (rectsIntersect(selRect, bounds)) {
+                                            selectedStks.push(stk);
+                                            hasSelection = true;
+                                            if(bounds.x < minX) minX = bounds.x;
+                                            if(bounds.y < minY) minY = bounds.y;
+                                            if(bounds.x + bounds.w > maxX) maxX = bounds.x + bounds.w;
+                                            if(bounds.y + bounds.h > maxY) maxY = bounds.y + bounds.h;
+                                        }
+                                    });
+                                }
+
+                                if (hasSelection) {
+                                    state.selection.selectedImages = selectedImgs;
+                                    state.selection.selectedStrokes = selectedStks;
+                                    state.selection.boundingBox = {
+                                        x: minX,
+                                        y: minY,
+                                        w: maxX - minX,
+                                        h: maxY - minY
+                                    };
+                                    state.selection.mode = 'idle'; // Selected, ready for drag/resize
+                                } else {
+                                    clearSelection();
+                                }
+                            } else {
+                                clearSelection();
+                            }
+                        } else {
+                            clearSelection();
+                        }
+                    } else {
+                        // Finishing Drag or Resize
+                        state.selection.mode = 'idle';
+                        // Save DB
+                        const docId = state.view[side].docId;
+                        saveAnnotationsToDB(docId, state.annotations[docId]);
+                    }
+                    renderAnnotations(side);
+                } else if (state.annoTool !== 'eraser-stroke') {
                     finishAnnotationStroke(side);
                 } else {
                     const docId = state.view[side].docId;
@@ -1561,6 +1980,7 @@
             state.view[otherSide].pageNum = targetData.page;
             state.view[otherSide].scrollTop = 0; 
             
+            clearSelection();
             saveSettings(); 
             renderPage(otherSide);
         }

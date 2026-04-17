@@ -3,11 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF Linker Studio (Tablet Support)</title>
+    <title>PDF Linker Studio (Overwrite Support)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- PDF.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <!-- PDF-Lib (For Editing) -->
+    <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+    <!-- JSZip (For Bundling) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <!-- FileSaver.js (Fallback) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
     <!-- FontAwesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
@@ -41,8 +47,6 @@
             left: 0;
             z-index: 55; 
             pointer-events: none; 
-            
-            /* CRITICAL FIX: Prevent browser scrolling/zooming when using Stylus/Pen */
             touch-action: none; 
         }
         
@@ -130,6 +134,7 @@
     </style>
     <script>
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        const { PDFDocument } = PDFLib;
     </script>
 </head>
 <body class="bg-gray-100 h-screen flex flex-col overflow-hidden text-gray-800 font-sans">
@@ -140,7 +145,7 @@
             <i class="fa-solid fa-file-pdf text-red-500 text-2xl"></i>
             <div>
                 <h1 class="text-xl font-bold text-gray-800 leading-tight">PDF Linker Studio</h1>
-                <p class="text-[10px] text-green-600 font-medium"><i class="fa-solid fa-check-circle"></i> Full Session Restored</p>
+                <p class="text-[10px] text-green-600 font-medium"><i class="fa-solid fa-check-circle"></i> Ready</p>
             </div>
         </div>
         
@@ -197,12 +202,12 @@
 
             <div class="h-8 w-px bg-gray-300 mx-2"></div>
             
-            <button onclick="exportProject()" class="text-gray-600 hover:text-blue-600 font-medium text-sm flex items-center gap-2">
-                <i class="fa-solid fa-download"></i> Save
+            <button onclick="exportProject()" class="bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm px-3 py-1.5 rounded shadow-sm flex items-center gap-2 transition-colors">
+                <i class="fa-solid fa-floppy-disk"></i> Save
             </button>
-            <label class="text-gray-600 hover:text-blue-600 font-medium text-sm flex items-center gap-2 cursor-pointer">
-                <i class="fa-solid fa-upload"></i> Load
-                <input type="file" id="import-project-input" class="hidden" accept=".json">
+            <label class="text-gray-600 hover:text-blue-600 font-medium text-sm flex items-center gap-2 cursor-pointer border border-gray-200 hover:border-blue-300 px-3 py-1.5 rounded bg-white transition-colors">
+                <i class="fa-solid fa-folder-open"></i> Open
+                <input type="file" id="import-project-input" class="hidden" accept=".zip,.json">
             </label>
         </div>
     </header>
@@ -225,7 +230,7 @@
             <div id="doc-list" class="flex-1 overflow-y-auto p-2 space-y-2">
                 <div id="loading-spinner" class="hidden flex flex-col items-center justify-center mt-10">
                     <div class="spinner mb-2"></div>
-                    <span class="text-xs text-gray-500">Restoring Session...</span>
+                    <span class="text-xs text-gray-500">Processing...</span>
                 </div>
                 <div class="text-center mt-10 text-gray-400 text-sm italic" id="empty-state-msg">
                     No PDFs imported yet.
@@ -246,10 +251,22 @@
             <div class="flex-1 flex flex-col border-r border-gray-300 relative min-w-0 group">
                 <div class="h-10 bg-white border-b border-gray-300 flex items-center justify-between px-4 shrink-0 z-10">
                     <span class="text-sm font-bold text-gray-600 truncate w-32" id="left-view-title">None</span>
+                    
                     <div class="flex items-center gap-2">
+                        <!-- Navigation Controls -->
                         <button onclick="navigatePage('left', -1)" class="p-1 hover:bg-gray-100 rounded text-gray-600"><i class="fa-solid fa-chevron-left"></i></button>
                         <span id="left-page-indicator" class="text-xs text-gray-500 w-16 text-center">-- / --</span>
                         <button onclick="navigatePage('left', 1)" class="p-1 hover:bg-gray-100 rounded text-gray-600"><i class="fa-solid fa-chevron-right"></i></button>
+                        
+                        <div class="w-px h-4 bg-gray-300 mx-1"></div>
+
+                        <!-- Page Tools (Left) -->
+                        <button onclick="insertPage('left', 'blank')" class="p-1 hover:text-indigo-600 hover:bg-indigo-50 text-gray-400 rounded transition-colors" title="Insert Blank Page After Current">
+                            <i class="fa-regular fa-file-circle-plus text-sm"></i>
+                        </button>
+                        <button onclick="insertPage('left', 'duplicate')" class="p-1 hover:text-indigo-600 hover:bg-indigo-50 text-gray-400 rounded transition-colors" title="Duplicate Current Page">
+                            <i class="fa-regular fa-clone text-sm"></i>
+                        </button>
                     </div>
                 </div>
                 <div class="flex-1 overflow-auto relative flex justify-center p-4 bg-gray-500/10 pdf-canvas-container" id="left-viewport">
@@ -265,10 +282,22 @@
             <div class="flex-1 flex flex-col relative min-w-0">
                 <div class="h-10 bg-white border-b border-gray-300 flex items-center justify-between px-4 shrink-0 z-10">
                     <span class="text-sm font-bold text-gray-600 truncate w-32" id="right-view-title">None</span>
+                    
                     <div class="flex items-center gap-2">
+                        <!-- Navigation Controls -->
                         <button onclick="navigatePage('right', -1)" class="p-1 hover:bg-gray-100 rounded text-gray-600"><i class="fa-solid fa-chevron-left"></i></button>
                         <span id="right-page-indicator" class="text-xs text-gray-500 w-16 text-center">-- / --</span>
                         <button onclick="navigatePage('right', 1)" class="p-1 hover:bg-gray-100 rounded text-gray-600"><i class="fa-solid fa-chevron-right"></i></button>
+                        
+                        <div class="w-px h-4 bg-gray-300 mx-1"></div>
+
+                        <!-- Page Tools (Right) -->
+                        <button onclick="insertPage('right', 'blank')" class="p-1 hover:text-indigo-600 hover:bg-indigo-50 text-gray-400 rounded transition-colors" title="Insert Blank Page After Current">
+                            <i class="fa-regular fa-file-circle-plus text-sm"></i>
+                        </button>
+                        <button onclick="insertPage('right', 'duplicate')" class="p-1 hover:text-indigo-600 hover:bg-indigo-50 text-gray-400 rounded transition-colors" title="Duplicate Current Page">
+                            <i class="fa-regular fa-clone text-sm"></i>
+                        </button>
                     </div>
                 </div>
                 <div class="flex-1 overflow-auto relative flex justify-center p-4 bg-gray-500/10 pdf-canvas-container" id="right-viewport">
@@ -308,7 +337,7 @@
         }
 
         const DB_NAME = 'PDFLinkerStudioDB';
-        const DB_VERSION = 3; 
+        const DB_VERSION = 4; 
         let db;
 
         async function initDB() {
@@ -403,7 +432,8 @@
                 currentPoint: { x: 0, y: 0 },
                 pointerId: null 
             },
-            highlightRequest: null 
+            highlightRequest: null,
+            projectFileHandle: null // NEW: Stores the reference to the saved file
         };
 
         const els = {
@@ -510,11 +540,9 @@
             els.uploadInput.addEventListener('change', handleFileUpload);
             els.importInput.addEventListener('change', handleProjectImport);
             
-            // SWITCH TO POINTER EVENTS FOR TABLET SUPPORT
             window.addEventListener('pointerdown', handlePointerDown);
             window.addEventListener('pointermove', handlePointerMove);
             window.addEventListener('pointerup', handlePointerUp);
-            // Keep scroll events as is
             els.leftViewport.addEventListener('scroll', () => handleScroll('left'));
             els.rightViewport.addEventListener('scroll', () => handleScroll('right'));
             
@@ -867,7 +895,7 @@
             saveAnnotationsToDB(docId, state.annotations[docId]);
         }
 
-        // --- Stroke Eraser Logic (Swipe) ---
+        // --- Stroke Eraser Logic ---
 
         function distToSegmentSquared(p, v, w) {
             const l2 = (v.x - w.x)**2 + (v.y - w.y)**2;
@@ -955,6 +983,357 @@
             clearView('right', state.view.right.docId, state.view.right.pageNum);
         }
 
+        // --- PDF Manipulation (Insert/Duplicate) ---
+
+        async function insertPage(side, type) {
+            const docId = state.view[side].docId;
+            
+            if (!docId) { 
+                showModal("Error", "No document loaded in this viewport."); 
+                return; 
+            }
+
+            const insertIndex = state.view[side].pageNum; // Insert AFTER this page
+
+            els.loadingSpinner.classList.remove('hidden');
+            els.loadingSpinner.querySelector('span').innerText = "Processing PDF...";
+
+            try {
+                const originalDoc = state.documents[docId];
+                const arrayBuffer = await originalDoc.file.arrayBuffer();
+                const pdfLibDoc = await PDFDocument.load(arrayBuffer);
+
+                const pages = pdfLibDoc.getPages();
+                const refPageIndex = Math.max(0, Math.min(insertIndex - 1, pages.length - 1));
+                const refPage = pages[refPageIndex];
+                const { width, height } = refPage.getSize();
+
+                if (type === 'blank') {
+                    pdfLibDoc.insertPage(insertIndex, [width, height]);
+                } else if (type === 'duplicate') {
+                    const [copiedPage] = await pdfLibDoc.copyPages(pdfLibDoc, [refPageIndex]);
+                    pdfLibDoc.insertPage(insertIndex, copiedPage);
+                }
+
+                const newPdfBytes = await pdfLibDoc.save();
+                const newBlob = new Blob([newPdfBytes], { type: 'application/pdf' });
+
+                // 1. Shift Annotations
+                if (state.annotations[docId]) {
+                    const newAnnoMap = {};
+                    Object.keys(state.annotations[docId]).forEach(key => {
+                        const pageNum = parseInt(key);
+                        if (pageNum > insertIndex) {
+                            newAnnoMap[pageNum + 1] = state.annotations[docId][pageNum];
+                        } else {
+                            newAnnoMap[pageNum] = state.annotations[docId][pageNum];
+                        }
+                    });
+                    state.annotations[docId] = newAnnoMap;
+                    await saveAnnotationsToDB(docId, state.annotations[docId]);
+                }
+
+                // 2. Shift Links
+                const updatedLinks = [];
+                for (const link of state.links) {
+                    const updatePoint = (pt) => {
+                        if (pt.docId === docId && pt.page > insertIndex) {
+                            return { ...pt, page: pt.page + 1 };
+                        }
+                        return pt;
+                    };
+                    const newLink = {
+                        ...link,
+                        source: updatePoint(link.source),
+                        target: updatePoint(link.target)
+                    };
+                    updatedLinks.push(newLink);
+                    await saveLinkToDB(newLink);
+                }
+                state.links = updatedLinks;
+
+                // 3. Reload Document
+                const newPdfJsDoc = await pdfjsLib.getDocument(newPdfBytes).promise;
+
+                state.documents[docId].file = newBlob;
+                state.documents[docId].pdfDoc = newPdfJsDoc;
+                state.documents[docId].pageCount = newPdfJsDoc.numPages;
+
+                await saveDocumentToDB({
+                    id: docId,
+                    name: originalDoc.name,
+                    pageCount: newPdfJsDoc.numPages,
+                    thumbnail: originalDoc.thumbnail,
+                    fileBlob: newBlob
+                });
+
+                // Switch to new page for convenience
+                state.view[side].pageNum = insertIndex + 1;
+                
+                renderPage(side);
+                renderDocList();
+
+                showModal("Success", `${type === 'blank' ? 'Blank' : 'Duplicated'} page added at position ${insertIndex + 1}.`);
+
+            } catch (err) {
+                console.error(err);
+                showModal("Error", "Failed to process PDF: " + err.message);
+            } finally {
+                els.loadingSpinner.classList.add('hidden');
+            }
+        }
+
+        // --- Project Save/Load (Smart Overwrite) ---
+
+        async function exportProject() {
+            const docKeys = Object.keys(state.documents);
+            if (docKeys.length === 0) {
+                showModal("Export", "No documents loaded.");
+                return;
+            }
+
+            els.loadingSpinner.classList.remove('hidden');
+            els.loadingSpinner.querySelector('span').innerText = "Creating ZIP...";
+
+            try {
+                const zip = new JSZip();
+
+                // Create metadata file
+                const metadata = {
+                    version: "2.0",
+                    timestamp: Date.now(),
+                    links: state.links,
+                    annotations: state.annotations,
+                    settings: {
+                        id: 'appState',
+                        view: state.view,
+                        appMode: state.appMode,
+                        annoTool: state.annoTool,
+                        annoColor: state.annoColor,
+                        annoThickness: state.annoThickness
+                    },
+                    documents: {}
+                };
+
+                // Add PDFs to ZIP
+                for (const id of docKeys) {
+                    const doc = state.documents[id];
+                    const safeFilename = `${id}.pdf`;
+                    
+                    metadata.documents[id] = {
+                        id: doc.id,
+                        name: doc.name,
+                        pageCount: doc.pageCount,
+                        thumbnail: doc.thumbnail,
+                        filename: safeFilename
+                    };
+
+                    zip.file(safeFilename, doc.file);
+                }
+
+                zip.file("project.json", JSON.stringify(metadata, null, 2));
+
+                // Generate ZIP blob in memory
+                const content = await zip.generateAsync({type:"blob"});
+                
+                // --- SMART SAVE LOGIC ---
+                let handle = state.projectFileHandle;
+                
+                // If we don't have a handle, ask user where to save (allow overwriting existing file)
+                if (!handle) {
+                    try {
+                        // Check browser support
+                        if (window.showSaveFilePicker) {
+                            handle = await window.showSaveFilePicker({
+                                suggestedName: 'pdf_linker_project.zip',
+                                types: [{
+                                    description: 'Project Archive',
+                                    accept: {'application/zip': ['.zip']},
+                                }],
+                            });
+                        } else {
+                            throw new Error("API not supported");
+                        }
+                    } catch (err) {
+                        // User canceled or API not supported
+                        if (err.name === 'AbortError') {
+                            els.loadingSpinner.classList.add('hidden');
+                            return; 
+                        }
+                        // Fallback to standard download if API fails or missing
+                        throw new Error("Use Standard Download");
+                    }
+                }
+
+                // Try to write to the handle
+                try {
+                    const writable = await handle.createWritable();
+                    await writable.write(content);
+                    await writable.close();
+                    
+                    // Remember this handle for instant saves next time
+                    state.projectFileHandle = handle;
+                    
+                    showModal("Saved", "Project saved successfully!");
+                } catch (writeErr) {
+                    console.error(writeErr);
+                    throw new Error("Write failed");
+                }
+
+            } catch (err) {
+                console.error("Save Error:", err);
+                // Fallback: Standard Download (FileSaver.js)
+                saveAs(content, "pdf_linker_project.zip");
+                
+                let msg = "Project downloaded as new file.";
+                if (err.message === "Use Standard Download") {
+                    msg += " (Your browser doesn't support file overwriting. Please manually replace the old file.)";
+                } else {
+                    msg += " (Error writing to selected file. Downloaded instead.)";
+                }
+                showModal("Download Complete", msg);
+            } finally {
+                els.loadingSpinner.classList.add('hidden');
+            }
+        }
+
+        async function handleProjectImport(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            els.loadingSpinner.classList.remove('hidden');
+            els.loadingSpinner.querySelector('span').innerText = "Loading Project...";
+
+            try {
+                // Check if ZIP or JSON (old format)
+                const isZip = file.name.endsWith('.zip');
+
+                if (isZip) {
+                    const zip = await JSZip.loadAsync(file);
+                    
+                    // 1. Load Metadata
+                    const metaFile = zip.file("project.json");
+                    if (!metaFile) throw new Error("Invalid ZIP: project.json not found.");
+                    
+                    const metaString = await metaFile.async("string");
+                    const metadata = JSON.parse(metaString);
+
+                    // 2. Load Documents from ZIP
+                    for (const [id, docInfo] of Object.entries(metadata.documents)) {
+                        const pdfFile = zip.file(docInfo.filename);
+                        if (pdfFile) {
+                            const blob = await pdfFile.async("blob");
+                            
+                            const arrayBuffer = await blob.arrayBuffer();
+                            const pdfDoc = await pdfjsLib.getDocument(arrayBuffer).promise;
+
+                            state.documents[id] = {
+                                id: id,
+                                file: blob,
+                                pdfDoc: pdfDoc,
+                                name: docInfo.name,
+                                pageCount: pdfDoc.numPages,
+                                thumbnail: docInfo.thumbnail
+                            };
+
+                            await saveDocumentToDB({
+                                id: id,
+                                name: docInfo.name,
+                                pageCount: docInfo.pageCount,
+                                thumbnail: docInfo.thumbnail,
+                                fileBlob: blob
+                            });
+                        }
+                    }
+
+                    // 3. Restore Links
+                    if (metadata.links) {
+                        state.links = metadata.links;
+                        for (const link of state.links) {
+                            await saveLinkToDB(link);
+                        }
+                    }
+
+                    // 4. Restore Annotations
+                    if (metadata.annotations) {
+                        state.annotations = metadata.annotations;
+                        for (const [docId, data] of Object.entries(state.annotations)) {
+                            saveAnnotationsToDB(docId, data);
+                        }
+                    }
+
+                    // 5. Restore Settings
+                    if (metadata.settings) {
+                        const s = metadata.settings;
+                        state.view = s.view;
+                        state.appMode = s.appMode;
+                        state.annoTool = s.annoTool;
+                        state.annoColor = s.annoColor;
+                        state.annoThickness = s.annoThickness;
+                        
+                        setAppMode(state.appMode, false);
+                        setAnnoTool(state.annoTool, false);
+                        els.colorPicker.value = state.annoColor;
+                        els.thicknessPicker.value = state.annoThickness;
+                        
+                        saveSettings(); 
+                    }
+                    
+                    // NOTE: We cannot get a FileHandle from a standard <input> in all browsers easily,
+                    // so we reset the projectFileHandle. The user will have to re-select the file 
+                    // on first save, enabling overwrite.
+                    state.projectFileHandle = null;
+
+                    showModal("Import Success", "Project loaded. Click Save to overwrite or create new file.");
+
+                } else {
+                    // Fallback for old JSON format
+                    const reader = new FileReader();
+                    reader.onload = async function(event) {
+                        try {
+                            const project = JSON.parse(event.target.result);
+                            if (!project.links || !project.documents) throw new Error("Invalid format");
+
+                            project.links.forEach(async link => {
+                                state.links.push(link);
+                                await saveLinkToDB(link);
+                            });
+                            
+                            if (project.annotations) {
+                                state.annotations = { ...state.annotations, ...project.annotations };
+                                Object.keys(project.annotations).forEach(docId => {
+                                    saveAnnotationsToDB(docId, project.annotations[docId]);
+                                });
+                            }
+                            
+                            let msg = "Legacy JSON Project loaded!\n\nPlease re-upload PDFs to activate them:\n";
+                            project.documents.forEach(d => msg += `- ${d.name}\n`);
+                            showModal("Project Imported", msg);
+                            renderMarkersForView('left');
+                            renderMarkersForView('right');
+
+                        } catch (err) {
+                            showModal("Import Error", "Failed to parse file.");
+                        }
+                    };
+                    reader.readAsText(file);
+                }
+
+                if (isZip) {
+                    renderDocList();
+                    if (state.view.left.docId) renderPage('left');
+                    if (state.view.right.docId) renderPage('right');
+                }
+
+            } catch (err) {
+                console.error(err);
+                showModal("Import Error", "Failed to load project: " + err.message);
+            } finally {
+                els.loadingSpinner.classList.add('hidden');
+            }
+            e.target.value = '';
+        }
+
         // --- Interaction / Global Mouse Handlers ---
 
         function getMousePosInViewport(evt, side) {
@@ -969,7 +1348,6 @@
             if (e.target.closest('.link-marker')) return;
             if (e.target.closest('button') || e.target.closest('input')) return;
 
-            // FIX: Prevent default touch actions handled by browser (scrolling)
             e.target.setPointerCapture(e.pointerId);
 
             const leftRect = els.leftWrapper.getBoundingClientRect();
@@ -1003,15 +1381,11 @@
                 updatePathVisual();
             } 
             else if (state.appMode === 'annotation') {
-                // FIX FOR PENTAB: If pointerType is pen, allow drawing regardless of button (e.button)
-                // Mouse users still need Left Click (e.button === 0)
                 if (e.pointerType === 'pen' || e.button === 0) {
                      if (state.annoTool === 'eraser-stroke') {
-                        // FIX: SWIPE MODE - Do NOT delete on click. Just activate drag.
                         state.drawing.active = true;
                         state.drawing.pointerId = e.pointerId;
                         state.drawing.startSide = clickedSide;
-                        // REMOVED: deleteStrokeAt(clickedSide, pos.x, pos.y);
                     } else {
                         state.drawing.active = true;
                         state.drawing.pointerId = e.pointerId;
@@ -1025,7 +1399,6 @@
 
         function handlePointerMove(e) {
             if (!state.drawing.active) return;
-            // Only process move if pointer ID matches
             if (state.drawing.pointerId !== e.pointerId) return;
 
             const side = state.drawing.startSide;
@@ -1037,11 +1410,9 @@
             } 
             else if (state.appMode === 'annotation') {
                 if (state.annoTool === 'eraser-stroke') {
-                    // SWIPE MODE: Keep checking for deletions
                     const pos = getMousePosInViewport(e, side);
                     deleteStrokeAt(side, pos.x, pos.y);
                 } else {
-                    // DRAW MODE
                     const pos = getMousePosInViewport(e, side);
                     continueAnnotationStroke(side, pos.x, pos.y);
                 }
@@ -1097,10 +1468,6 @@
                 if (state.annoTool !== 'eraser-stroke') {
                     finishAnnotationStroke(side);
                 } else {
-                    // Save for stroke eraser only if something was actually deleted?
-                    // We are relying on `deleteStrokeAt` returning true, 
-                    // but since we want to save the *state of deletions* (or lack thereof) on mouseup,
-                    // we can just save the current state which has already been modified by `deleteStrokeAt`.
                     const docId = state.view[side].docId;
                     if(docId) saveAnnotationsToDB(docId, state.annotations[docId]);
                 }
@@ -1196,67 +1563,6 @@
             
             saveSettings(); 
             renderPage(otherSide);
-        }
-
-        function exportProject() {
-            const docKeys = Object.keys(state.documents);
-            if (docKeys.length === 0) {
-                showModal("Export", "No documents loaded.");
-                return;
-            }
-            const projectData = {
-                version: "1.0",
-                timestamp: Date.now(),
-                links: state.links,
-                annotations: state.annotations,
-                documents: docKeys.map(id => ({ id, name: state.documents[id].name, pageCount: state.documents[id].pageCount }))
-            };
-
-            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(projectData, null, 2));
-            const downloadAnchorNode = document.createElement('a');
-            downloadAnchorNode.setAttribute("href", dataStr);
-            downloadAnchorNode.setAttribute("download", "pdf_linker_project.json");
-            document.body.appendChild(downloadAnchorNode); 
-            downloadAnchorNode.click();
-            downloadAnchorNode.remove();
-            showModal("Export Success", "Project saved! \n\nNote: Annotations are included. You will need to re-upload PDF files to view them.");
-        }
-
-        function handleProjectImport(e) {
-            const file = e.target.files[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = function(event) {
-                try {
-                    const project = JSON.parse(event.target.result);
-                    if (!project.links || !project.documents) throw new Error("Invalid format");
-
-                    project.links.forEach(async link => {
-                        state.links.push(link);
-                        await saveLinkToDB(link);
-                    });
-                    
-                    if (project.annotations) {
-                        state.annotations = { ...state.annotations, ...project.annotations };
-                        Object.keys(project.annotations).forEach(docId => {
-                            saveAnnotationsToDB(docId, project.annotations[docId]);
-                        });
-                    }
-
-                    let msg = "Project loaded! Links and Annotations added.\n\nPlease re-upload the following PDFs to activate them:\n";
-                    project.documents.forEach(d => msg += `- ${d.name}\n`);
-                    
-                    showModal("Project Imported", msg);
-                    renderMarkersForView('left');
-                    renderMarkersForView('right');
-
-                } catch (err) {
-                    showModal("Import Error", "Failed to parse project file.");
-                    console.error(err);
-                }
-            };
-            reader.readAsText(file);
-            e.target.value = ''; 
         }
 
         function showModal(title, body) {

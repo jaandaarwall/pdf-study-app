@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF Linker Studio (Fixed Resizing)</title>
+    <title>PDF Linker Studio (Resizable & Zoom)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- PDF.js -->
@@ -38,6 +38,7 @@
         .pdf-canvas {
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
             transition: transform 0.2s;
+            display: block; /* Prevents inline-block spacing issues */
         }
 
         /* Annotation Canvas Layer */
@@ -133,6 +134,41 @@
             animation: spin 1s linear infinite;
         }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* Resizer Styles */
+        #vertical-resizer {
+            background-color: #e5e7eb;
+            width: 6px;
+            cursor: col-resize;
+            transition: background-color 0.2s;
+            z-index: 30;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #vertical-resizer:hover, #vertical-resizer.resizing {
+            background-color: #3b82f6;
+        }
+        #vertical-resizer::after {
+            content: '';
+            width: 2px;
+            height: 20px;
+            background-color: #9ca3af;
+            border-radius: 1px;
+        }
+        #vertical-resizer:hover::after {
+            background-color: white;
+        }
+        
+        /* Prevent text selection while dragging */
+        body.resizing-active {
+            user-select: none;
+            cursor: col-resize;
+        }
+        body.resizing-active * {
+            cursor: col-resize !important;
+        }
     </style>
     <script>
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -258,14 +294,25 @@
         </aside>
 
         <!-- Workspace (Split View) -->
-        <main class="flex-1 flex bg-gray-200 overflow-hidden relative">
+        <main class="flex-1 flex bg-gray-200 overflow-hidden relative" id="workspace-main">
             
             <!-- Left Viewport -->
-            <div class="flex-1 flex flex-col border-r border-gray-300 relative min-w-0 group">
+            <div id="left-panel" class="flex flex-col border-r border-gray-300 relative min-w-0 group" style="width: 50%;">
                 <div class="h-10 bg-white border-b border-gray-300 flex items-center justify-between px-4 shrink-0 z-10">
                     <span class="text-sm font-bold text-gray-600 truncate w-32" id="left-view-title">None</span>
                     
                     <div class="flex items-center gap-2">
+                        <!-- Zoom Controls -->
+                        <div class="flex items-center bg-gray-50 rounded border border-gray-200">
+                            <button onclick="zoomViewport('left', -0.25)" class="px-1.5 py-0.5 hover:bg-gray-200 rounded text-gray-600 text-xs" title="Zoom Out"><i class="fa-solid fa-minus"></i></button>
+                            <span id="left-zoom-level" class="text-[10px] w-8 text-center font-mono text-gray-500">100%</span>
+                            <button onclick="zoomViewport('left', 0.25)" class="px-1.5 py-0.5 hover:bg-gray-200 rounded text-gray-600 text-xs" title="Zoom In"><i class="fa-solid fa-plus"></i></button>
+                            <div class="w-px h-3 bg-gray-300 mx-0.5"></div>
+                            <button onclick="resetZoom('left')" class="px-1.5 py-0.5 hover:bg-blue-100 text-blue-600 rounded text-xs" title="Fit Width"><i class="fa-solid fa-expand"></i></button>
+                        </div>
+
+                        <div class="w-px h-4 bg-gray-300 mx-1"></div>
+
                         <!-- Navigation Controls -->
                         <button onclick="navigatePage('left', -1)" class="p-1 hover:bg-gray-100 rounded text-gray-600"><i class="fa-solid fa-chevron-left"></i></button>
                         <span id="left-page-indicator" class="text-xs text-gray-500 w-16 text-center">-- / --</span>
@@ -291,12 +338,26 @@
                 </div>
             </div>
 
+            <!-- Vertical Resizer -->
+            <div id="vertical-resizer" title="Drag to resize viewports"></div>
+
             <!-- Right Viewport -->
-            <div class="flex-1 flex flex-col relative min-w-0">
+            <div id="right-panel" class="flex flex-col relative min-w-0" style="width: 50%;">
                 <div class="h-10 bg-white border-b border-gray-300 flex items-center justify-between px-4 shrink-0 z-10">
                     <span class="text-sm font-bold text-gray-600 truncate w-32" id="right-view-title">None</span>
                     
                     <div class="flex items-center gap-2">
+                         <!-- Zoom Controls -->
+                        <div class="flex items-center bg-gray-50 rounded border border-gray-200">
+                            <button onclick="zoomViewport('right', -0.25)" class="px-1.5 py-0.5 hover:bg-gray-200 rounded text-gray-600 text-xs" title="Zoom Out"><i class="fa-solid fa-minus"></i></button>
+                            <span id="right-zoom-level" class="text-[10px] w-8 text-center font-mono text-gray-500">100%</span>
+                            <button onclick="zoomViewport('right', 0.25)" class="px-1.5 py-0.5 hover:bg-gray-200 rounded text-gray-600 text-xs" title="Zoom In"><i class="fa-solid fa-plus"></i></button>
+                            <div class="w-px h-3 bg-gray-300 mx-0.5"></div>
+                            <button onclick="resetZoom('right')" class="px-1.5 py-0.5 hover:bg-blue-100 text-blue-600 rounded text-xs" title="Fit Width"><i class="fa-solid fa-expand"></i></button>
+                        </div>
+
+                        <div class="w-px h-4 bg-gray-300 mx-1"></div>
+
                         <!-- Navigation Controls -->
                         <button onclick="navigatePage('right', -1)" class="p-1 hover:bg-gray-100 rounded text-gray-600"><i class="fa-solid fa-chevron-left"></i></button>
                         <span id="right-page-indicator" class="text-xs text-gray-500 w-16 text-center">-- / --</span>
@@ -322,7 +383,7 @@
                 </div>
             </div>
 
-            <svg id="drawing-layer" class="absolute inset-0 w-full h-full z-40 overflow-visible">
+            <svg id="drawing-layer" class="absolute inset-0 w-full h-full z-40 overflow-visible pointer-events-none">
                 <path id="current-draw-path" d="" fill="none" stroke="#ef4444" stroke-width="2" stroke-dasharray="5,5" style="display:none;"></path>
             </svg>
 
@@ -350,7 +411,7 @@
         }
 
         const DB_NAME = 'PDFLinkerStudioDB';
-        const DB_VERSION = 4; 
+        const DB_VERSION = 5; // Updated version for new layout state
         let db;
 
         async function initDB() {
@@ -391,6 +452,7 @@
             const settings = {
                 id: 'appState',
                 view: state.view,
+                splitRatio: state.splitRatio,
                 appMode: state.appMode,
                 annoTool: state.annoTool,
                 annoColor: state.annoColor,
@@ -428,9 +490,10 @@
         const state = {
             documents: {}, 
             view: {
-                left: { docId: null, pageNum: 1, scale: 1.0, scrollTop: 0 },
-                right: { docId: null, pageNum: 1, scale: 1.0, scrollTop: 0 }
+                left: { docId: null, pageNum: 1, scale: 1.5, scrollTop: 0 },
+                right: { docId: null, pageNum: 1, scale: 1.5, scrollTop: 0 }
             },
+            splitRatio: 0.5, // 0.0 to 1.0
             links: [], 
             appMode: 'navigation', 
             annoTool: 'pen', 
@@ -475,6 +538,10 @@
             docList: document.getElementById('doc-list'),
             emptyMsg: document.getElementById('empty-state-msg'),
             loadingSpinner: document.getElementById('loading-spinner'),
+            leftPanel: document.getElementById('left-panel'),
+            rightPanel: document.getElementById('right-panel'),
+            resizer: document.getElementById('vertical-resizer'),
+            workspaceMain: document.getElementById('workspace-main'),
             leftCanvas: document.getElementById('left-canvas'),
             rightCanvas: document.getElementById('right-canvas'),
             leftAnnoCanvas: document.getElementById('left-anno-canvas'),
@@ -503,6 +570,8 @@
             rightTitle: document.getElementById('right-view-title'),
             leftPageInd: document.getElementById('left-page-indicator'),
             rightPageInd: document.getElementById('right-page-indicator'),
+            leftZoomLevel: document.getElementById('left-zoom-level'),
+            rightZoomLevel: document.getElementById('right-zoom-level'),
         };
 
         const handleScroll = debounce((side) => {
@@ -512,6 +581,82 @@
             saveSettings();
             renderMarkersForView(side);
         }, 200);
+
+        // --- Resizer Logic ---
+        function initResizer() {
+            const resizer = els.resizer;
+            const leftSide = els.leftPanel;
+            const rightSide = els.rightPanel;
+            const container = els.workspaceMain;
+            
+            let x = 0;
+            let leftWidth = 0;
+
+            const mouseDownHandler = function(e) {
+                x = e.clientX;
+                const rect = leftSide.getBoundingClientRect();
+                leftWidth = rect.width;
+
+                document.body.classList.add('resizing-active');
+                resizer.classList.add('resizing');
+
+                document.addEventListener('pointermove', mouseMoveHandler);
+                document.addEventListener('pointerup', mouseUpHandler);
+            };
+
+            const mouseMoveHandler = function(e) {
+                const dx = e.clientX - x;
+                const newLeftWidth = ((leftWidth + dx) * 100) / container.getBoundingClientRect().width;
+                
+                // Limit between 10% and 90%
+                if (newLeftWidth > 10 && newLeftWidth < 90) {
+                    leftSide.style.width = `${newLeftWidth}%`;
+                    rightSide.style.width = `${100 - newLeftWidth}%`;
+                    state.splitRatio = newLeftWidth / 100;
+                }
+            };
+
+            const mouseUpHandler = function() {
+                document.body.classList.remove('resizing-active');
+                resizer.classList.remove('resizing');
+                
+                document.removeEventListener('pointermove', mouseMoveHandler);
+                document.removeEventListener('pointerup', mouseUpHandler);
+                
+                saveSettings();
+                
+                // Re-render link markers in case position shifted slightly relative to viewport
+                renderMarkersForView('left');
+                renderMarkersForView('right');
+            };
+
+            resizer.addEventListener('pointerdown', mouseDownHandler);
+        }
+
+        // --- Zoom Logic ---
+        function updateZoomIndicator(side) {
+            const percentage = Math.round(state.view[side].scale * 100);
+            els[side + 'ZoomLevel'].innerText = percentage + '%';
+        }
+
+        function zoomViewport(side, delta) {
+            const currentScale = state.view[side].scale;
+            let newScale = currentScale + delta;
+            if (newScale < 0.25) newScale = 0.25;
+            if (newScale > 5.0) newScale = 5.0;
+            
+            state.view[side].scale = newScale;
+            updateZoomIndicator(side);
+            renderPage(side);
+            saveSettings();
+        }
+
+        function resetZoom(side) {
+            state.view[side].scale = 1.0; // Reset to 100%
+            updateZoomIndicator(side);
+            renderPage(side);
+            saveSettings();
+        }
 
         async function init() {
             try {
@@ -557,11 +702,16 @@
                     if (savedData.settings) {
                         const sView = savedData.settings.view;
                         if (sView.left.docId && state.documents[sView.left.docId]) {
-                            state.view.left = { ...sView.left, scale: 1.0, scrollTop: sView.left.scrollTop || 0 };
+                            state.view.left = { ...sView.left, scrollTop: sView.left.scrollTop || 0 };
                             if(state.view.left.docId) state.lastActiveSide = 'left';
                         }
                         if (sView.right.docId && state.documents[sView.right.docId]) {
-                            state.view.right = { ...sView.right, scale: 1.0, scrollTop: sView.right.scrollTop || 0 };
+                            state.view.right = { ...sView.right, scrollTop: sView.right.scrollTop || 0 };
+                        }
+                        if (savedData.settings.splitRatio) {
+                            state.splitRatio = savedData.settings.splitRatio;
+                            els.leftPanel.style.width = (state.splitRatio * 100) + '%';
+                            els.rightPanel.style.width = ((1 - state.splitRatio) * 100) + '%';
                         }
                         if (savedData.settings.appMode) setAppMode(savedData.settings.appMode, false);
                         if (savedData.settings.annoTool) setAnnoTool(savedData.settings.annoTool, false);
@@ -576,6 +726,8 @@
                     }
 
                     renderDocList();
+                    updateZoomIndicator('left');
+                    updateZoomIndicator('right');
                     if (state.view.left.docId) renderPage('left');
                     if (state.view.right.docId) renderPage('right');
                 }
@@ -607,6 +759,8 @@
                 state.annoThickness = parseInt(e.target.value);
                 saveSettings();
             });
+
+            initResizer();
         }
 
         function setAppMode(mode, save = true) {
@@ -674,8 +828,8 @@
                 state.links = [];
                 state.annotations = {};
                 state.imageCache = {};
-                state.view.left = { docId: null, pageNum: 1, scale: 1.0, scrollTop: 0 };
-                state.view.right = { docId: null, pageNum: 1, scale: 1.0, scrollTop: 0 };
+                state.view.left = { docId: null, pageNum: 1, scale: 1.5, scrollTop: 0 };
+                state.view.right = { docId: null, pageNum: 1, scale: 1.5, scrollTop: 0 };
                 state.lastActiveSide = 'left';
                 renderDocList();
                 renderPage('left');
@@ -888,7 +1042,9 @@
 
             try {
                 const page = await doc.pdfDoc.getPage(viewState.pageNum);
-                const viewport = page.getViewport({ scale: 1.5 }); 
+                // Use Dynamic Scale
+                const scale = viewState.scale || 1.5;
+                const viewport = page.getViewport({ scale: scale }); 
 
                 canvas.width = viewport.width; canvas.height = viewport.height;
                 annoCanvas.width = viewport.width; annoCanvas.height = viewport.height;
@@ -1351,10 +1507,11 @@
                 const zip = new JSZip();
 
                 const metadata = {
-                    version: "2.1", 
+                    version: "2.2", // Increment version for layout data
                     timestamp: Date.now(),
                     links: state.links,
                     annotations: state.annotations,
+                    splitRatio: state.splitRatio,
                     settings: {
                         id: 'appState',
                         view: state.view,
@@ -1417,9 +1574,13 @@
 
             } catch (err) {
                 console.error("Save Error:", err);
-                const content = await zip.generateAsync({type:"blob"}); 
-                saveAs(content, "pdf_linker_project.zip");
-                showModal("Download Complete", "Project downloaded.");
+                try {
+                    const content = await zip.generateAsync({type:"blob"}); 
+                    saveAs(content, "pdf_linker_project.zip");
+                    showModal("Download Complete", "Project downloaded.");
+                } catch (fallbackErr) {
+                    showModal("Error", "Could not save or download project.");
+                }
             } finally {
                 els.loadingSpinner.classList.add('hidden');
             }
@@ -1489,6 +1650,12 @@
                         }
                     }
 
+                    if (metadata.splitRatio) {
+                        state.splitRatio = metadata.splitRatio;
+                        els.leftPanel.style.width = (state.splitRatio * 100) + '%';
+                        els.rightPanel.style.width = ((1 - state.splitRatio) * 100) + '%';
+                    }
+
                     if (metadata.settings) {
                         const s = metadata.settings;
                         state.view = s.view;
@@ -1511,6 +1678,8 @@
 
                 if (isZip) {
                     renderDocList();
+                    updateZoomIndicator('left');
+                    updateZoomIndicator('right');
                     if (state.view.left.docId) renderPage('left');
                     if (state.view.right.docId) renderPage('right');
                 }
@@ -1524,7 +1693,7 @@
             e.target.value = '';
         }
 
-        // --- Interaction / Global Mouse Handlers (FIXED RESIZING) ---
+        // --- Interaction / Global Mouse Handlers ---
 
         function getMousePosInViewport(evt, side) {
             const rect = els[side + 'Wrapper'].getBoundingClientRect();
@@ -1535,7 +1704,8 @@
         }
 
         function handlePointerDown(e) {
-            if (e.target.closest('.link-marker')) return;
+            // Ignore if interacting with UI elements
+            if (e.target.closest('.link-marker') || e.target.closest('#vertical-resizer')) return;
             if (e.target.closest('button') || e.target.closest('input')) return;
 
             e.target.setPointerCapture(e.pointerId);
@@ -1595,7 +1765,6 @@
                             
                             state.selection.mode = 'resizing';
                             state.selection.dragStartMouse = { x: pos.x, y: pos.y }; // Normalized
-                            // DEEP CLONE current positions to use as base
                             state.selection.dragStartPositions = {
                                 bbox: { ...bbox },
                                 images: state.selection.selectedImages.map(img => ({ ...img })),
@@ -1842,9 +2011,7 @@
                                 // Check Strokes
                                 if (pageData.strokes) {
                                     pageData.strokes.forEach(stk => {
-                                        // Skip eraser strokes
                                         if (stk.tool === 'eraser-pixel') return;
-
                                         const bounds = getStrokeBounds(stk);
                                         if (rectsIntersect(selRect, bounds)) {
                                             selectedStks.push(stk);
@@ -1866,7 +2033,7 @@
                                         w: maxX - minX,
                                         h: maxY - minY
                                     };
-                                    state.selection.mode = 'idle'; // Selected, ready for drag/resize
+                                    state.selection.mode = 'idle';
                                 } else {
                                     clearSelection();
                                 }
@@ -1879,7 +2046,6 @@
                     } else {
                         // Finishing Drag or Resize
                         state.selection.mode = 'idle';
-                        // Save DB
                         const docId = state.view[side].docId;
                         saveAnnotationsToDB(docId, state.annotations[docId]);
                     }

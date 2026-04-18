@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF Linker Studio (Full Search)</title>
+    <title>PDF Linker Studio (Uniform Scrolling)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- PDF.js -->
@@ -69,6 +69,32 @@
             background: rgba(59, 130, 246, 0.3); 
             color: transparent;
         }
+
+        /* --- Selection Mode Logic --- */
+        /* By default (Navigation Mode), allow text selection */
+        body:not(.linking-mode):not(.annotation-mode):not(.delete-link-mode) .textLayer {
+            user-select: text;
+        }
+        
+        /* Disable text selection in Linking, Annotation, and Delete modes */
+        body.linking-mode .textLayer,
+        body.annotation-mode .textLayer,
+        body.delete-link-mode .textLayer {
+            user-select: none;
+        }
+
+        /* Force crosshair cursor in Linking Mode even over text */
+        body.linking-mode .textLayer span {
+            cursor: crosshair !important;
+        }
+
+        body.annotation-mode .textLayer {
+            pointer-events: none; /* Keep this so you can draw over text */
+        }
+
+        body:not(.annotation-mode) .textLayer span {
+            cursor: text;
+        }
         
         /* --- Search Highlights --- */
         .search-highlight-layer {
@@ -113,12 +139,16 @@
         body.anno-stroke-eraser .annotation-canvas:active { cursor: grabbing; }
         body.anno-select .annotation-canvas { cursor: default; }
         body.anno-select .annotation-canvas:active { cursor: grabbing; }
-        
-        body:not(.annotation-mode) .textLayer span {
-            cursor: text;
+
+        /* --- Delete Link Mode Styles --- */
+        body.delete-link-mode .link-marker {
+            cursor: pointer !important;
         }
-        body.annotation-mode .textLayer {
-            pointer-events: none;
+        body.delete-link-mode .link-marker:hover {
+            background-color: #dc2626 !important;
+            border-color: #991b1b !important;
+            transform: translate(-50%, -50%) scale(1.2) rotate(45deg);
+            box-shadow: 0 0 10px rgba(220, 38, 38, 0.8);
         }
 
         /* Link Button Marker */
@@ -139,7 +169,7 @@
             justify-content: center;
             font-size: 12px;
             color: white;
-            transition: background-color 0.2s, transform 0.2s, box-shadow 0.2s;
+            transition: all 0.2s ease-in-out;
         }
         
         .link-marker:hover {
@@ -166,16 +196,55 @@
         #drawing-layer {
             pointer-events: none; 
         }
+        
+        /* FIX: Removed pointer-events: auto to allow click-through to scrollbars/buttons */
         body.linking-mode #drawing-layer {
-            pointer-events: auto;
             cursor: crosshair;
         }
+        
         body.linking-mode .pdf-canvas-container {
             cursor: crosshair;
         }
         body.linking-mode .link-marker {
             pointer-events: none; 
             opacity: 0.5;
+        }
+
+        /* Sidebar Doc Item Actions */
+        .doc-item-actions {
+            opacity: 0;
+            transition: opacity 0.2s;
+            display: flex;
+            gap: 4px;
+        }
+        .group:hover .doc-item-actions {
+            opacity: 1;
+        }
+        
+        .action-btn {
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+            font-size: 10px;
+            cursor: pointer;
+        }
+        .action-rename { background: #e0f2fe; color: #0369a1; }
+        .action-rename:hover { background: #bae6fd; }
+        .action-delete { background: #fee2e2; color: #b91c1c; }
+        .action-delete:hover { background: #fecaca; }
+
+        /* Rename Input */
+        .rename-input {
+            width: 100%;
+            padding: 2px 4px;
+            font-size: 0.875rem;
+            border: 1px solid #3b82f6;
+            border-radius: 4px;
+            outline: none;
+            background-color: white;
         }
 
         /* Modal */
@@ -262,6 +331,10 @@
                 <button id="mode-link-btn" class="px-3 py-1.5 rounded-md text-sm font-medium text-gray-500 hover:text-gray-700 transition-all" onclick="setAppMode('linking')" title="Draw Link Mode">
                     <i class="fa-solid fa-link"></i>
                 </button>
+                <button id="mode-del-link-btn" class="px-3 py-1.5 rounded-md text-sm font-medium text-gray-500 hover:text-gray-700 transition-all relative" onclick="setAppMode('delete-link')" title="Delete Link Mode (Click links to delete)">
+                    <i class="fa-solid fa-eraser"></i>
+                    <i class="fa-solid fa-link absolute -bottom-0.5 -right-0.5 text-[8px] text-red-500 bg-white rounded-full"></i>
+                </button>
                 <button id="mode-anno-btn" class="px-3 py-1.5 rounded-md text-sm font-medium text-gray-500 hover:text-gray-700 transition-all" onclick="setAppMode('annotation')" title="Annotation Mode">
                     <i class="fa-solid fa-pen"></i>
                 </button>
@@ -307,11 +380,14 @@
                 <div class="w-px h-5 bg-gray-300 mx-1"></div>
 
                 <!-- Actions -->
+                <button onclick="deleteSelection()" class="w-8 h-8 rounded flex items-center justify-center text-red-600 hover:bg-red-50 hover:text-red-700 transition-colors" title="Delete Selection">
+                    <i class="fa-solid fa-trash-can"></i>
+                </button>
                 <button onclick="undoLastStroke()" class="w-8 h-8 rounded flex items-center justify-center text-gray-600 hover:bg-gray-100 hover:text-gray-900 transition-colors" title="Undo Last Line">
                     <i class="fa-solid fa-rotate-left"></i>
                 </button>
                 <button onclick="clearCurrentPageAnnotations()" class="w-8 h-8 rounded flex items-center justify-center text-gray-600 hover:bg-red-50 hover:text-red-600 transition-colors" title="Clear Page">
-                    <i class="fa-solid fa-trash-can"></i>
+                    <i class="fa-solid fa-file-circle-xmark"></i>
                 </button>
             </div>
 
@@ -417,6 +493,9 @@
                         <button onclick="insertPage('left', 'duplicate')" class="p-1 hover:text-indigo-600 hover:bg-indigo-50 text-gray-400 rounded transition-colors" title="Duplicate Current Page">
                             <i class="fa-regular fa-clone text-sm"></i>
                         </button>
+                        <button onclick="deleteCurrentPage('left')" class="p-1 hover:text-red-600 hover:bg-red-50 text-gray-400 rounded transition-colors" title="Delete Current Page">
+                            <i class="fa-solid fa-trash-can text-sm"></i>
+                        </button>
                     </div>
                 </div>
                 <div class="flex-1 overflow-auto relative flex justify-center p-4 bg-gray-500/10 pdf-canvas-container" id="left-viewport">
@@ -479,6 +558,9 @@
                         <button onclick="insertPage('right', 'duplicate')" class="p-1 hover:text-indigo-600 hover:bg-indigo-50 text-gray-400 rounded transition-colors" title="Duplicate Current Page">
                             <i class="fa-regular fa-clone text-sm"></i>
                         </button>
+                        <button onclick="deleteCurrentPage('right')" class="p-1 hover:text-red-600 hover:bg-red-50 text-gray-400 rounded transition-colors" title="Delete Current Page">
+                            <i class="fa-solid fa-trash-can text-sm"></i>
+                        </button>
                     </div>
                 </div>
                 <div class="flex-1 overflow-auto relative flex justify-center p-4 bg-gray-500/10 pdf-canvas-container" id="right-viewport">
@@ -520,7 +602,7 @@
         }
 
         const DB_NAME = 'PDFLinkerStudioDB';
-        const DB_VERSION = 6; 
+        const DB_VERSION = 10; 
         let db;
 
         async function initDB() {
@@ -549,6 +631,11 @@
         async function saveLinkToDB(linkData) {
             const tx = db.transaction(['links'], 'readwrite');
             tx.objectStore('links').put(linkData);
+        }
+
+        async function deleteLinkFromDB(linkId) {
+            const tx = db.transaction(['links'], 'readwrite');
+            tx.objectStore('links').delete(linkId);
         }
 
         async function saveAnnotationsToDB(docId, data) {
@@ -667,6 +754,7 @@
             currentPath: document.getElementById('current-draw-path'),
             modeNavBtn: document.getElementById('mode-nav-btn'),
             modeLinkBtn: document.getElementById('mode-link-btn'),
+            modeDelLinkBtn: document.getElementById('mode-del-link-btn'),
             modeAnnoBtn: document.getElementById('mode-anno-btn'),
             annoTools: document.getElementById('anno-tools'),
             toolSelect: document.getElementById('tool-select'),
@@ -834,13 +922,11 @@
                 return;
             }
 
-            // If same query, don't re-search (unless targetPageNum is specific)
             if (state.search[side].query === query && !targetPageNum) {
                 renderSearchHighlights(side);
                 return;
             }
 
-            // Cancel previous search
             if (state.search[side].abortController) {
                 state.search[side].abortController.abort();
             }
@@ -851,8 +937,6 @@
 
             const doc = state.documents[docId];
             const allMatches = [];
-            
-            // Limit search to 100 pages for performance, or all if smaller
             const maxPage = Math.min(doc.pageCount, 500); 
             const measureCtx = state.measureCanvas.getContext('2d');
 
@@ -862,48 +946,29 @@
                 try {
                     const page = await doc.pdfDoc.getPage(i);
                     const textContent = await page.getTextContent();
-                    
-                    // Use current zoom for coordinates
                     const viewport = page.getViewport({ scale: state.view[side].scale });
 
-                    // Iterate through text items to find matches
-                    // We must loop to find multiple matches within a single item
                     for (let itemIdx = 0; itemIdx < textContent.items.length; itemIdx++) {
                         const item = textContent.items[itemIdx];
                         const textStr = item.str.toLowerCase();
                         
                         if (textStr.includes(query)) {
-                            // Calculate base geometry for the text item
                             const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
-                            
-                            // Item dimensions
                             const left = tx[4];
                             const bottom = tx[5];
                             const fontSize = Math.sqrt((tx[0] * tx[0]) + (tx[1] * tx[1]));
                             const top = bottom - fontSize;
                             
-                            // Find all occurrences of query in this item
                             let searchIndex = 0;
                             let matchIndex;
                             while ((matchIndex = textStr.indexOf(query, searchIndex)) !== -1) {
-                                // --- Precise Highlight Calculation using measureText ---
-                                
-                                // 1. Get Font Info
                                 const cssFontFamily = getCssFontFamily(item.fontName);
-                                
-                                // 2. Configure Measurement Context
                                 measureCtx.font = `${fontSize}px ${cssFontFamily}`;
-                                
-                                // 3. Measure the prefix (text before the match)
-                                // This gives us the EXACT pixel offset of where the match starts
                                 const prefixStr = item.str.substring(0, matchIndex);
                                 const prefixWidth = measureCtx.measureText(prefixStr).width;
-                                
-                                // 4. Measure the match string itself
                                 const matchStr = item.str.substring(matchIndex, matchIndex + query.length);
                                 const matchWidth = measureCtx.measureText(matchStr).width;
 
-                                // 5. Calculate absolute positions
                                 const matchLeft = left + prefixWidth;
                                 
                                 allMatches.push({
@@ -915,7 +980,7 @@
                                     h: fontSize
                                 });
 
-                                searchIndex = matchIndex + 1; // Find next occurrence
+                                searchIndex = matchIndex + 1;
                             }
                         }
                     }
@@ -923,31 +988,25 @@
             }
 
             state.search[side].results = allMatches;
-            
-            // Determine starting index
             let startIndex = 0;
             if (targetPageNum) {
-                // If jumping from global search, find the first match on that specific page
                 startIndex = allMatches.findIndex(m => m.page === targetPageNum);
             } else {
-                // Else, find the first match on current page
                 const currentMatches = allMatches.filter(m => m.page === state.view[side].pageNum);
                 if (currentMatches.length > 0) {
                     startIndex = allMatches.indexOf(currentMatches[0]);
                 } else if (allMatches.length > 0) {
-                    // If no match on current page, go to first overall match
                     startIndex = 0;
                 }
             }
             
-            if (startIndex === -1) startIndex = 0; // Fallback
+            if (startIndex === -1) startIndex = 0;
             state.search[side].index = startIndex;
             
-            // If a target page was requested and we are not on it, switch page
             const targetMatch = allMatches[startIndex];
             if (targetPageNum && targetMatch && targetMatch.page !== state.view[side].pageNum) {
                 state.view[side].pageNum = targetMatch.page;
-                renderPage(side); // This will trigger renderSearchHighlights
+                renderPage(side); 
             } else {
                 renderSearchHighlights(side);
             }
@@ -963,11 +1022,8 @@
             const container = document.getElementById(`${side}-search-layer`);
             container.innerHTML = '';
             
-            // Filter results for current page only
             const currentPage = state.view[side].pageNum;
             const pageMatches = state.search[side].results.filter(m => m.page === currentPage);
-            
-            // Find which one is active based on global index
             const activeGlobalIndex = state.search[side].index;
             
             pageMatches.forEach((res) => {
@@ -999,7 +1055,6 @@
             state.search[side].index = newIndex;
             const match = results[newIndex];
             
-            // Check if we need to change page
             if (match.page !== state.view[side].pageNum) {
                 state.view[side].pageNum = match.page;
                 renderPage(side);
@@ -1064,13 +1119,11 @@
                     state.view[side].pageNum = match.page;
                     state.view[side].scrollTop = 0;
                     
-                    // Open Search UI
                     const input = document.getElementById(`${side}-search-input`);
                     input.value = query;
                     input.classList.remove('hidden');
                     document.getElementById(`${side}-search-nav`).classList.remove('hidden');
 
-                    // Run Full Doc Search and Highlight
                     await performViewportSearch(side, match.page);
                     
                     renderPage(side);
@@ -1079,6 +1132,224 @@
                 container.appendChild(div);
             });
         }
+
+        // --- Feature: Delete Document & Rename ---
+        async function deleteDocument(id) {
+            if(!confirm("Are you sure you want to delete this PDF and all its annotations/links?")) return;
+
+            delete state.documents[id];
+            delete state.annotations[id];
+
+            const initialLinkCount = state.links.length;
+            state.links = state.links.filter(l => l.source.docId !== id && l.target.docId !== id);
+            
+            const tx = db.transaction(['documents', 'links', 'annotations'], 'readwrite');
+            tx.objectStore('documents').delete(id);
+            tx.objectStore('annotations').delete(id);
+            const linkStore = tx.objectStore('links');
+            linkStore.clear();
+            state.links.forEach(l => linkStore.put(l));
+
+            if(state.view.left.docId === id) {
+                state.view.left.docId = null;
+                renderPage('left');
+            }
+            if(state.view.right.docId === id) {
+                state.view.right.docId = null;
+                renderPage('right');
+            }
+
+            renderDocList();
+            renderMarkersForView('left');
+            renderMarkersForView('right');
+        }
+
+        function enableRename(id) {
+            const el = document.getElementById(`doc-name-${id}`);
+            const currentName = state.documents[id].name;
+            
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.value = currentName;
+            input.className = 'rename-input';
+            
+            const doSave = () => {
+                saveRename(id, input.value);
+            };
+
+            input.onblur = doSave;
+            
+            input.onkeydown = (e) => {
+                if(e.key === 'Enter') {
+                    input.blur(); 
+                } else if (e.key === 'Escape') {
+                    renderDocList(); 
+                }
+            };
+
+            el.replaceWith(input);
+            input.focus();
+        }
+
+        async function saveRename(id, newName) {
+            if(!newName.trim()) {
+                renderDocList(); 
+                return;
+            }
+            state.documents[id].name = newName;
+            await saveDocumentToDB(state.documents[id]);
+            renderDocList();
+        }
+
+        // --- Feature: Delete Link (Mode Based) ---
+        async function deleteLink(linkId) {
+            const idx = state.links.findIndex(l => l.id === linkId);
+            if(idx !== -1) {
+                state.links.splice(idx, 1);
+                await deleteLinkFromDB(linkId);
+                renderMarkersForView('left');
+                renderMarkersForView('right');
+            }
+        }
+
+        // --- Feature: Delete Page ---
+        async function deleteCurrentPage(side) {
+            const viewState = state.view[side];
+            const docId = viewState.docId;
+            const pageNum = viewState.pageNum;
+
+            if (!docId) return;
+
+            if (!confirm(`Delete page ${pageNum} from ${state.documents[docId].name}? This cannot be undone.`)) return;
+
+            els.loadingSpinner.classList.remove('hidden');
+            els.loadingSpinner.querySelector('span').innerText = "Deleting Page...";
+
+            try {
+                const originalDoc = state.documents[docId];
+                if (originalDoc.pageCount <= 1) {
+                    showModal("Error", "Cannot delete the only page in a document.");
+                    return;
+                }
+
+                const arrayBuffer = await originalDoc.file.arrayBuffer();
+                const pdfLibDoc = await PDFDocument.load(arrayBuffer);
+
+                pdfLibDoc.removePage(pageNum - 1);
+
+                const newPdfBytes = await pdfLibDoc.save();
+                const newBlob = new Blob([newPdfBytes], { type: 'application/pdf' });
+
+                // 1. Update Annotations (Shift Down)
+                if (state.annotations[docId]) {
+                    const newAnnoMap = {};
+                    for(let i=1; i<pageNum; i++) {
+                        if(state.annotations[docId][i]) newAnnoMap[i] = state.annotations[docId][i];
+                    }
+                    for(let i=pageNum+1; i<=originalDoc.pageCount; i++) {
+                        if(state.annotations[docId][i]) newAnnoMap[i-1] = state.annotations[docId][i];
+                    }
+                    state.annotations[docId] = newAnnoMap;
+                    await saveAnnotationsToDB(docId, state.annotations[docId]);
+                }
+
+                // 2. Update Links
+                const updatedLinks = [];
+                for (const link of state.links) {
+                    let keepLink = true;
+                    const updatePoint = (pt) => {
+                        if (pt.docId === docId) {
+                            if (pt.page === pageNum) {
+                                keepLink = false; 
+                            } else if (pt.page > pageNum) {
+                                return { ...pt, page: pt.page - 1 };
+                            }
+                        }
+                        return pt;
+                    };
+
+                    const newSource = updatePoint(link.source);
+                    const newTarget = updatePoint(link.target);
+
+                    if(keepLink) {
+                        updatedLinks.push({ ...link, source: newSource, target: newTarget });
+                        await saveLinkToDB(updatedLinks[updatedLinks.length-1]);
+                    }
+                }
+                
+                const tx = db.transaction(['links'], 'readwrite');
+                const linkStore = tx.objectStore('links');
+                linkStore.clear();
+                updatedLinks.forEach(l => linkStore.put(l));
+                state.links = updatedLinks;
+
+                // 3. Reload Document
+                const newPdfJsDoc = await pdfjsLib.getDocument(newPdfBytes).promise;
+
+                state.documents[docId].file = newBlob;
+                state.documents[docId].pdfDoc = newPdfJsDoc;
+                state.documents[docId].pageCount = newPdfJsDoc.numPages;
+
+                await saveDocumentToDB({
+                    id: docId,
+                    name: originalDoc.name,
+                    pageCount: newPdfJsDoc.numPages,
+                    thumbnail: originalDoc.thumbnail,
+                    fileBlob: newBlob
+                });
+
+                if (state.view[side].pageNum > state.documents[docId].pageCount) {
+                    state.view[side].pageNum = state.documents[docId].pageCount;
+                }
+                
+                const otherSide = side === 'left' ? 'right' : 'left';
+                if(state.view[otherSide].docId === docId && state.view[otherSide].pageNum >= pageNum) {
+                    if (state.view[otherSide].pageNum > state.documents[docId].pageCount) {
+                        state.view[otherSide].pageNum = state.documents[docId].pageCount;
+                    }
+                    renderPage(otherSide);
+                }
+
+                renderPage(side);
+                renderDocList();
+                showModal("Success", "Page deleted successfully.");
+
+            } catch (err) {
+                console.error(err);
+                showModal("Error", "Failed to delete page.");
+            } finally {
+                els.loadingSpinner.classList.add('hidden');
+            }
+        }
+
+        // --- Feature: Delete Selection ---
+        function deleteSelection() {
+            if (!state.selection.active) return;
+            const side = state.selection.side;
+            const docId = state.view[side].docId;
+            const pageNum = state.view[side].pageNum;
+            
+            if (!state.annotations[docId] || !state.annotations[docId][pageNum]) return;
+            const pageData = state.annotations[docId][pageNum];
+
+            state.selection.selectedImages.forEach(imgObj => {
+                const idx = pageData.images.indexOf(imgObj);
+                if(idx > -1) {
+                    pageData.images.splice(idx, 1);
+                    delete state.imageCache[imgObj.id];
+                }
+            });
+
+            state.selection.selectedStrokes.forEach(strokeObj => {
+                const idx = pageData.strokes.indexOf(strokeObj);
+                if(idx > -1) pageData.strokes.splice(idx, 1);
+            });
+
+            clearSelection();
+            saveAnnotationsToDB(docId, state.annotations[docId]);
+            renderAnnotations(side);
+        }
+
 
         async function init() {
             try {
@@ -1164,7 +1435,6 @@
             els.imageInput.addEventListener('change', handleImageUpload);
             els.importInput.addEventListener('change', handleProjectImport);
             
-            // Search Listeners
             els.globalSearchInput.addEventListener('input', debounce(performGlobalSearch, 300));
             ['left', 'right'].forEach(side => {
                 document.getElementById(`${side}-search-input`).addEventListener('keydown', (e) => {
@@ -1188,7 +1458,7 @@
                 saveSettings();
             });
             els.thicknessPicker.addEventListener('input', (e) => {
-                state.annoThickness = parseInt(e.target.value);
+                state.annoThickness = parseInt(e.value);
                 saveSettings();
             });
 
@@ -1199,9 +1469,9 @@
             state.appMode = mode;
             if (save) saveSettings();
 
-            document.body.classList.remove('linking-mode', 'annotation-mode', 'anno-pen', 'anno-pixel-eraser', 'anno-stroke-eraser', 'anno-select');
+            document.body.classList.remove('linking-mode', 'annotation-mode', 'anno-pen', 'anno-pixel-eraser', 'anno-stroke-eraser', 'anno-select', 'delete-link-mode');
 
-            [els.modeNavBtn, els.modeLinkBtn, els.modeAnnoBtn].forEach(btn => {
+            [els.modeNavBtn, els.modeLinkBtn, els.modeDelLinkBtn, els.modeAnnoBtn].forEach(btn => {
                 btn.classList.remove('bg-white', 'shadow-sm', 'text-gray-800');
                 btn.classList.add('text-gray-500');
             });
@@ -1214,7 +1484,12 @@
                 document.body.classList.add('linking-mode');
                 els.modeLinkBtn.classList.add('bg-white', 'shadow-sm', 'text-gray-800');
                 els.modeLinkBtn.classList.remove('text-gray-500');
-                if(save) showModal("Link Mode", "Click and drag from one document to another to create a link.");
+                // showModal("Link Mode", "Click and drag from one document to another to create a link.");
+            } else if (mode === 'delete-link') {
+                document.body.classList.add('delete-link-mode');
+                els.modeDelLinkBtn.classList.add('bg-white', 'shadow-sm', 'text-gray-800');
+                els.modeDelLinkBtn.classList.remove('text-gray-500');
+                showModal("Delete Link Mode", "Click on any red link marker to delete it.");
             } else if (mode === 'annotation') {
                 document.body.classList.add('annotation-mode');
                 els.modeAnnoBtn.classList.add('bg-white', 'shadow-sm', 'text-gray-800');
@@ -1403,7 +1678,7 @@
                 const isActiveRight = state.view.right.docId === id;
 
                 const item = document.createElement('div');
-                item.className = `p-2 rounded-lg cursor-pointer border transition-all flex items-center gap-3 ${
+                item.className = `group relative p-2 rounded-lg cursor-pointer border transition-all flex items-center gap-3 ${
                     (isActiveLeft || isActiveRight) ? 'bg-blue-50 border-blue-200' : 'hover:bg-gray-50 border-transparent bg-white'
                 }`;
                 
@@ -1413,14 +1688,24 @@
 
                 item.innerHTML = `
                     <img src="${doc.thumbnail}" class="w-10 h-12 object-cover rounded border border-gray-200 bg-gray-100">
-                    <div class="flex-1 min-w-0">
-                        <div class="text-sm font-medium text-gray-800 truncate">${doc.name}</div>
+                    <div class="flex-1 min-w-0 overflow-hidden">
+                        <div id="doc-name-${id}" class="text-sm font-medium text-gray-800 truncate select-none" title="${doc.name}">${doc.name}</div>
                         <div class="text-xs text-gray-500">${doc.pageCount} pages</div>
                     </div>
                     ${badges}
+                    
+                    <div class="doc-item-actions ml-2">
+                        <div class="action-btn action-rename" onclick="event.stopPropagation(); enableRename('${id}')" title="Rename">
+                            <i class="fa-solid fa-pen"></i>
+                        </div>
+                        <div class="action-btn action-delete" onclick="event.stopPropagation(); deleteDocument('${id}')" title="Delete Document">
+                            <i class="fa-solid fa-trash"></i>
+                        </div>
+                    </div>
                 `;
 
-                item.onclick = () => {
+                item.onclick = (e) => {
+                    if(e.target.tagName === 'INPUT') return;
                     if (isActiveLeft) setActiveDocument('right', id);
                     else if (isActiveRight) setActiveDocument('left', id);
                     else {
@@ -1482,15 +1767,12 @@
                 wrapper.style.width = `${viewport.width}px`;
                 wrapper.style.height = `${viewport.height}px`;
 
-                // Render PDF
                 const renderContext = { canvasContext: ctx, viewport: viewport };
                 await page.render(renderContext).promise;
 
-                // Render Text Layer
                 const textContent = await page.getTextContent();
                 renderTextLayerCustom(textContent, textLayer, viewport);
 
-                // Re-run search if query exists
                 const searchInput = document.getElementById(`${side}-search-input`);
                 if (!searchInput.classList.contains('hidden') && searchInput.value) {
                     renderSearchHighlights(side);
@@ -1766,29 +2048,10 @@
 
         function handleKeyDown(e) {
             if ((e.key === 'Delete' || e.key === 'Backspace') && state.selection.active) {
-                const side = state.selection.side;
-                const docId = state.view[side].docId;
-                const pageNum = state.view[side].pageNum;
-                
-                if (!state.annotations[docId] || !state.annotations[docId][pageNum]) return;
-                const pageData = state.annotations[docId][pageNum];
-
-                state.selection.selectedImages.forEach(imgObj => {
-                    const idx = pageData.images.indexOf(imgObj);
-                    if(idx > -1) {
-                        pageData.images.splice(idx, 1);
-                        delete state.imageCache[imgObj.id];
-                    }
-                });
-
-                state.selection.selectedStrokes.forEach(strokeObj => {
-                    const idx = pageData.strokes.indexOf(strokeObj);
-                    if(idx > -1) pageData.strokes.splice(idx, 1);
-                });
-
-                clearSelection();
-                saveAnnotationsToDB(docId, state.annotations[docId]);
-                renderAnnotations(side);
+                if(e.target.tagName !== 'INPUT') {
+                    e.preventDefault();
+                    deleteSelection();
+                }
             }
         }
 
@@ -1864,7 +2127,6 @@
                 const newPdfBytes = await pdfLibDoc.save();
                 const newBlob = new Blob([newPdfBytes], { type: 'application/pdf' });
 
-                // Shift Annotations
                 if (state.annotations[docId]) {
                     const newAnnoMap = {};
                     Object.keys(state.annotations[docId]).forEach(key => {
@@ -1879,7 +2141,6 @@
                     await saveAnnotationsToDB(docId, state.annotations[docId]);
                 }
 
-                // Shift Links
                 const updatedLinks = [];
                 for (const link of state.links) {
                     const updatePoint = (pt) => {
@@ -1898,7 +2159,6 @@
                 }
                 state.links = updatedLinks;
 
-                // Reload Document
                 const newPdfJsDoc = await pdfjsLib.getDocument(newPdfBytes).promise;
 
                 state.documents[docId].file = newBlob;
@@ -1943,7 +2203,7 @@
                 const zip = new JSZip();
 
                 const metadata = {
-                    version: "2.3", 
+                    version: "2.7", 
                     timestamp: Date.now(),
                     links: state.links,
                     annotations: state.annotations,
@@ -2139,8 +2399,18 @@
         }
 
         function handlePointerDown(e) {
-            if (e.target.closest('.link-marker') || e.target.closest('#vertical-resizer')) return;
-            if (e.target.closest('button') || e.target.closest('input')) return;
+            if (e.target.closest('.link-marker')) {
+                if (state.appMode === 'delete-link') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const markerEl = e.target.closest('.link-marker');
+                    const linkId = markerEl.dataset.linkId;
+                    if (linkId) deleteLink(linkId);
+                    return;
+                }
+                return;
+            }
+            if (e.target.closest('#vertical-resizer') || e.target.closest('button') || e.target.closest('input')) return;
 
             e.target.setPointerCapture(e.pointerId);
 
@@ -2454,20 +2724,21 @@
                             clearSelection();
                         }
                     } else {
-                        state.selection.mode = 'idle';
-                        const docId = state.view[side].docId;
-                        saveAnnotationsToDB(docId, state.annotations[docId]);
+                        clearSelection();
                     }
-                    renderAnnotations(side);
-                } else if (state.annoTool !== 'eraser-stroke') {
-                    finishAnnotationStroke(side);
                 } else {
+                    state.selection.mode = 'idle';
                     const docId = state.view[side].docId;
-                    if(docId) saveAnnotationsToDB(docId, state.annotations[docId]);
+                    saveAnnotationsToDB(docId, state.annotations[docId]);
                 }
-                state.drawing.active = false;
+                renderAnnotations(side);
+            } else if (state.annoTool !== 'eraser-stroke') {
+                finishAnnotationStroke(side);
+            } else {
+                const docId = state.view[side].docId;
+                if(docId) saveAnnotationsToDB(docId, state.annotations[docId]);
             }
-            
+            state.drawing.active = false;
             e.target.releasePointerCapture(e.pointerId);
         }
 
@@ -2502,6 +2773,8 @@
 
                 const btn = document.createElement('div');
                 btn.className = 'link-marker';
+                btn.dataset.linkId = link.id; 
+                
                 const targetDocName = state.documents[isSource ? link.target.docId : link.source.docId]?.name || 'Unknown';
                 const targetPage = isSource ? link.target.page : link.source.page;
                 btn.title = `Jump to: ${targetDocName} (Page ${targetPage})`;
@@ -2529,7 +2802,11 @@
                 btn.onclick = (e) => {
                     e.stopPropagation();
                     e.preventDefault(); 
-                    followLink(link, side);
+                    if(state.appMode === 'delete-link') {
+                        deleteLink(link.id);
+                    } else {
+                        followLink(link, side);
+                    }
                 };
 
                 container.appendChild(btn);

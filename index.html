@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF Linker Studio (Resizable & Zoom)</title>
+    <title>PDF Linker Studio (Full Search)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- PDF.js -->
@@ -38,7 +38,59 @@
         .pdf-canvas {
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
             transition: transform 0.2s;
-            display: block; /* Prevents inline-block spacing issues */
+            display: block;
+        }
+
+        /* --- Text Layer (Selectable Text) --- */
+        .textLayer {
+            position: absolute;
+            left: 0;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            overflow: hidden;
+            line-height: 1.0;
+            opacity: 1;
+            z-index: 20; 
+            mix-blend-mode: multiply;
+        }
+        
+        .textLayer > span {
+            color: transparent;
+            position: absolute;
+            white-space: pre;
+            cursor: text;
+            transform-origin: 0% 0%;
+            font-family: sans-serif; 
+        }
+
+        /* Text Selection Color */
+        .textLayer ::selection {
+            background: rgba(59, 130, 246, 0.3); 
+            color: transparent;
+        }
+        
+        /* --- Search Highlights --- */
+        .search-highlight-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 25;
+            pointer-events: none; 
+        }
+
+        .search-highlight {
+            background-color: rgba(255, 255, 0, 0.4);
+            position: absolute;
+            border: 1px solid rgba(255, 200, 0, 0.6);
+        }
+
+        .search-highlight.active {
+            background-color: rgba(255, 100, 0, 0.5);
+            border: 2px solid rgb(255, 69, 0);
+            z-index: 26;
         }
 
         /* Annotation Canvas Layer */
@@ -61,6 +113,13 @@
         body.anno-stroke-eraser .annotation-canvas:active { cursor: grabbing; }
         body.anno-select .annotation-canvas { cursor: default; }
         body.anno-select .annotation-canvas:active { cursor: grabbing; }
+        
+        body:not(.annotation-mode) .textLayer span {
+            cursor: text;
+        }
+        body.annotation-mode .textLayer {
+            pointer-events: none;
+        }
 
         /* Link Button Marker */
         .link-marker {
@@ -161,13 +220,20 @@
             background-color: white;
         }
         
-        /* Prevent text selection while dragging */
         body.resizing-active {
             user-select: none;
             cursor: col-resize;
         }
         body.resizing-active * {
             cursor: col-resize !important;
+        }
+
+        /* Search Result Item */
+        .search-result-item {
+            cursor: pointer;
+        }
+        .search-result-item:hover {
+            background-color: #f3f4f6;
         }
     </style>
     <script>
@@ -275,6 +341,15 @@
                     <input type="file" id="pdf-upload-input" class="hidden" accept=".pdf" multiple>
                 </label>
             </div>
+
+            <!-- Global Search -->
+            <div class="px-3 py-2 border-b border-gray-100 bg-gray-50/50">
+                <div class="relative">
+                    <input type="text" id="global-search-input" placeholder="Search all docs..." class="w-full pl-8 pr-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    <i class="fa-solid fa-magnifying-glass absolute left-2.5 top-2 text-gray-400 text-xs"></i>
+                </div>
+                <div id="global-search-results" class="mt-2 max-h-40 overflow-y-auto hidden"></div>
+            </div>
             
             <div id="doc-list" class="flex-1 overflow-y-auto p-2 space-y-2">
                 <div id="loading-spinner" class="hidden flex flex-col items-center justify-center mt-10">
@@ -299,8 +374,23 @@
             <!-- Left Viewport -->
             <div id="left-panel" class="flex flex-col border-r border-gray-300 relative min-w-0 group" style="width: 50%;">
                 <div class="h-10 bg-white border-b border-gray-300 flex items-center justify-between px-4 shrink-0 z-10">
-                    <span class="text-sm font-bold text-gray-600 truncate w-32" id="left-view-title">None</span>
-                    
+                    <div class="flex items-center gap-2">
+                        <span class="text-sm font-bold text-gray-600 truncate w-24" id="left-view-title">None</span>
+                        <!-- Viewport Search -->
+                        <div class="relative group/search">
+                            <input type="text" id="left-search-input" placeholder="Find..." class="hidden pl-6 pr-2 py-0.5 text-[10px] border border-gray-300 rounded w-24 focus:w-32 transition-all focus:outline-none focus:ring-1 focus:ring-blue-500">
+                            <button id="left-search-toggle" onclick="toggleViewportSearch('left')" class="w-6 h-6 rounded hover:bg-gray-100 flex items-center justify-center text-gray-500 text-xs">
+                                <i class="fa-solid fa-magnifying-glass"></i>
+                            </button>
+                            <div id="left-search-nav" class="hidden absolute right-0 top-6 bg-white shadow-md border rounded flex p-1 z-50">
+                                <button onclick="navigateSearchResult('left', -1)" class="p-1 hover:bg-gray-100 rounded text-gray-600 text-xs"><i class="fa-solid fa-chevron-up"></i></button>
+                                <span id="left-search-count" class="text-[10px] self-center px-1 text-gray-500">0/0</span>
+                                <button onclick="navigateSearchResult('left', 1)" class="p-1 hover:bg-gray-100 rounded text-gray-600 text-xs"><i class="fa-solid fa-chevron-down"></i></button>
+                                <button onclick="closeViewportSearch('left')" class="ml-1 p-1 hover:bg-red-50 text-red-500 rounded text-xs"><i class="fa-solid fa-xmark"></i></button>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="flex items-center gap-2">
                         <!-- Zoom Controls -->
                         <div class="flex items-center bg-gray-50 rounded border border-gray-200">
@@ -332,6 +422,8 @@
                 <div class="flex-1 overflow-auto relative flex justify-center p-4 bg-gray-500/10 pdf-canvas-container" id="left-viewport">
                     <div id="left-canvas-wrapper" class="relative shadow-lg">
                         <canvas id="left-canvas" class="pdf-canvas bg-white block"></canvas>
+                        <div id="left-text-layer" class="textLayer"></div>
+                        <div id="left-search-layer" class="search-highlight-layer"></div>
                         <canvas id="left-anno-canvas" class="annotation-canvas"></canvas>
                         <div id="left-markers-layer" class="absolute inset-0 pointer-events-none"></div>
                     </div>
@@ -344,7 +436,22 @@
             <!-- Right Viewport -->
             <div id="right-panel" class="flex flex-col relative min-w-0" style="width: 50%;">
                 <div class="h-10 bg-white border-b border-gray-300 flex items-center justify-between px-4 shrink-0 z-10">
-                    <span class="text-sm font-bold text-gray-600 truncate w-32" id="right-view-title">None</span>
+                    <div class="flex items-center gap-2">
+                        <span class="text-sm font-bold text-gray-600 truncate w-24" id="right-view-title">None</span>
+                        <!-- Viewport Search -->
+                         <div class="relative group/search">
+                            <input type="text" id="right-search-input" placeholder="Find..." class="hidden pl-6 pr-2 py-0.5 text-[10px] border border-gray-300 rounded w-24 focus:w-32 transition-all focus:outline-none focus:ring-1 focus:ring-blue-500">
+                            <button id="right-search-toggle" onclick="toggleViewportSearch('right')" class="w-6 h-6 rounded hover:bg-gray-100 flex items-center justify-center text-gray-500 text-xs">
+                                <i class="fa-solid fa-magnifying-glass"></i>
+                            </button>
+                            <div id="right-search-nav" class="hidden absolute right-0 top-6 bg-white shadow-md border rounded flex p-1 z-50">
+                                <button onclick="navigateSearchResult('right', -1)" class="p-1 hover:bg-gray-100 rounded text-gray-600 text-xs"><i class="fa-solid fa-chevron-up"></i></button>
+                                <span id="right-search-count" class="text-[10px] self-center px-1 text-gray-500">0/0</span>
+                                <button onclick="navigateSearchResult('right', 1)" class="p-1 hover:bg-gray-100 rounded text-gray-600 text-xs"><i class="fa-solid fa-chevron-down"></i></button>
+                                <button onclick="closeViewportSearch('right')" class="ml-1 p-1 hover:bg-red-50 text-red-500 rounded text-xs"><i class="fa-solid fa-xmark"></i></button>
+                            </div>
+                        </div>
+                    </div>
                     
                     <div class="flex items-center gap-2">
                          <!-- Zoom Controls -->
@@ -377,6 +484,8 @@
                 <div class="flex-1 overflow-auto relative flex justify-center p-4 bg-gray-500/10 pdf-canvas-container" id="right-viewport">
                     <div id="right-canvas-wrapper" class="relative shadow-lg">
                         <canvas id="right-canvas" class="pdf-canvas bg-white block"></canvas>
+                        <div id="right-text-layer" class="textLayer"></div>
+                        <div id="right-search-layer" class="search-highlight-layer"></div>
                         <canvas id="right-anno-canvas" class="annotation-canvas"></canvas>
                         <div id="right-markers-layer" class="absolute inset-0 pointer-events-none"></div>
                     </div>
@@ -411,7 +520,7 @@
         }
 
         const DB_NAME = 'PDFLinkerStudioDB';
-        const DB_VERSION = 5; // Updated version for new layout state
+        const DB_VERSION = 6; 
         let db;
 
         async function initDB() {
@@ -493,7 +602,7 @@
                 left: { docId: null, pageNum: 1, scale: 1.5, scrollTop: 0 },
                 right: { docId: null, pageNum: 1, scale: 1.5, scrollTop: 0 }
             },
-            splitRatio: 0.5, // 0.0 to 1.0
+            splitRatio: 0.5,
             links: [], 
             appMode: 'navigation', 
             annoTool: 'pen', 
@@ -513,23 +622,23 @@
             selection: {
                 active: false,
                 side: null,
-                mode: 'idle', // 'idle', 'marquee', 'dragging', 'resizing'
-                
-                // Marquee Data
-                marqueeStart: null, // {x, y}
-                marqueeCurrent: null, // {x, y}
-
-                // Selection Data (Group)
-                selectedImages: [], // Array of image objects (references)
-                selectedStrokes: [], // Array of stroke objects (references)
-                boundingBox: null, // {x, y, w, h} of the group
-
-                // Drag/Resize State
-                dragStartMouse: null, // {x, y}
-                dragStartPositions: null, // Map of original positions
+                mode: 'idle',
+                marqueeStart: null,
+                marqueeCurrent: null,
+                selectedImages: [],
+                selectedStrokes: [],
+                boundingBox: null,
+                dragStartMouse: null,
+                dragStartPositions: null,
             },
             highlightRequest: null,
-            projectFileHandle: null
+            projectFileHandle: null,
+            search: {
+                left: { query: '', results: [], index: -1, abortController: null },
+                right: { query: '', results: [], index: -1, abortController: null }
+            },
+            // Reusable canvas for text measurement (performance)
+            measureCanvas: document.createElement('canvas')
         };
 
         const els = {
@@ -544,12 +653,16 @@
             workspaceMain: document.getElementById('workspace-main'),
             leftCanvas: document.getElementById('left-canvas'),
             rightCanvas: document.getElementById('right-canvas'),
+            leftTextLayer: document.getElementById('left-text-layer'),
+            rightTextLayer: document.getElementById('right-text-layer'),
             leftAnnoCanvas: document.getElementById('left-anno-canvas'),
             rightAnnoCanvas: document.getElementById('right-anno-canvas'),
             leftWrapper: document.getElementById('left-canvas-wrapper'),
             rightWrapper: document.getElementById('right-canvas-wrapper'),
             leftViewport: document.getElementById('left-viewport'),
             rightViewport: document.getElementById('right-viewport'),
+            leftSearchLayer: document.getElementById('left-search-layer'),
+            rightSearchLayer: document.getElementById('right-search-layer'),
             drawingLayer: document.getElementById('drawing-layer'),
             currentPath: document.getElementById('current-draw-path'),
             modeNavBtn: document.getElementById('mode-nav-btn'),
@@ -572,6 +685,8 @@
             rightPageInd: document.getElementById('right-page-indicator'),
             leftZoomLevel: document.getElementById('left-zoom-level'),
             rightZoomLevel: document.getElementById('right-zoom-level'),
+            globalSearchInput: document.getElementById('global-search-input'),
+            globalSearchResults: document.getElementById('global-search-results'),
         };
 
         const handleScroll = debounce((side) => {
@@ -607,8 +722,6 @@
             const mouseMoveHandler = function(e) {
                 const dx = e.clientX - x;
                 const newLeftWidth = ((leftWidth + dx) * 100) / container.getBoundingClientRect().width;
-                
-                // Limit between 10% and 90%
                 if (newLeftWidth > 10 && newLeftWidth < 90) {
                     leftSide.style.width = `${newLeftWidth}%`;
                     rightSide.style.width = `${100 - newLeftWidth}%`;
@@ -619,13 +732,9 @@
             const mouseUpHandler = function() {
                 document.body.classList.remove('resizing-active');
                 resizer.classList.remove('resizing');
-                
                 document.removeEventListener('pointermove', mouseMoveHandler);
                 document.removeEventListener('pointerup', mouseUpHandler);
-                
                 saveSettings();
-                
-                // Re-render link markers in case position shifted slightly relative to viewport
                 renderMarkersForView('left');
                 renderMarkersForView('right');
             };
@@ -644,7 +753,6 @@
             let newScale = currentScale + delta;
             if (newScale < 0.25) newScale = 0.25;
             if (newScale > 5.0) newScale = 5.0;
-            
             state.view[side].scale = newScale;
             updateZoomIndicator(side);
             renderPage(side);
@@ -652,10 +760,324 @@
         }
 
         function resetZoom(side) {
-            state.view[side].scale = 1.0; // Reset to 100%
+            state.view[side].scale = 1.0;
             updateZoomIndicator(side);
             renderPage(side);
             saveSettings();
+        }
+
+        // --- Text Layer Logic ---
+        function renderTextLayerCustom(textContent, textLayerDiv, viewport) {
+            textLayerDiv.innerHTML = '';
+            const textItems = textContent.items;
+            for (let item of textItems) {
+                if (item.str.length === 0) continue;
+                const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+                const fontSize = Math.sqrt((tx[0] * tx[0]) + (tx[1] * tx[1]));
+                const div = document.createElement('span');
+                div.textContent = item.str;
+                const left = tx[4];
+                const top = tx[5] - fontSize; 
+                const width = tx[0] * item.width; 
+                div.style.left = `${left}px`;
+                div.style.top = `${top}px`;
+                div.style.fontSize = `${fontSize}px`;
+                div.style.fontFamily = item.fontName || 'sans-serif';
+                div.style.width = `${width}px`;
+                textLayerDiv.appendChild(div);
+            }
+        }
+
+        // --- Helper: Map PDF Font Name to CSS Font Family ---
+        function getCssFontFamily(pdfFontName) {
+            if (!pdfFontName) return 'sans-serif';
+            const n = pdfFontName.toLowerCase();
+            if (n.includes('times')) return 'Times New Roman, serif';
+            if (n.includes('helvetica')) return 'Helvetica, Arial, sans-serif';
+            if (n.includes('courier')) return 'Courier New, monospace';
+            return 'sans-serif'; 
+        }
+
+        // --- Search Logic (Precise Highlighting using measureText) ---
+        
+        function toggleViewportSearch(side) {
+            const input = document.getElementById(`${side}-search-input`);
+            const nav = document.getElementById(`${side}-search-nav`);
+            if (input.classList.contains('hidden')) {
+                input.classList.remove('hidden');
+                nav.classList.remove('hidden');
+                input.focus();
+            } else {
+                input.focus();
+            }
+        }
+
+        function closeViewportSearch(side) {
+            const input = document.getElementById(`${side}-search-input`);
+            const nav = document.getElementById(`${side}-search-nav`);
+            input.classList.add('hidden');
+            nav.classList.add('hidden');
+            input.value = '';
+            clearSearchHighlights(side);
+            state.search[side] = { query: '', results: [], index: -1, abortController: null };
+        }
+
+        async function performViewportSearch(side, targetPageNum = null) {
+            const input = document.getElementById(`${side}-search-input`);
+            const query = input.value.trim().toLowerCase();
+            const docId = state.view[side].docId;
+
+            if (!query || !docId) {
+                clearSearchHighlights(side);
+                state.search[side] = { query: '', results: [], index: -1, abortController: null };
+                updateSearchCount(side);
+                return;
+            }
+
+            // If same query, don't re-search (unless targetPageNum is specific)
+            if (state.search[side].query === query && !targetPageNum) {
+                renderSearchHighlights(side);
+                return;
+            }
+
+            // Cancel previous search
+            if (state.search[side].abortController) {
+                state.search[side].abortController.abort();
+            }
+
+            const abortController = new AbortController();
+            state.search[side].abortController = abortController;
+            state.search[side].query = query;
+
+            const doc = state.documents[docId];
+            const allMatches = [];
+            
+            // Limit search to 100 pages for performance, or all if smaller
+            const maxPage = Math.min(doc.pageCount, 500); 
+            const measureCtx = state.measureCanvas.getContext('2d');
+
+            for (let i = 1; i <= maxPage; i++) {
+                if (abortController.signal.aborted) break;
+
+                try {
+                    const page = await doc.pdfDoc.getPage(i);
+                    const textContent = await page.getTextContent();
+                    
+                    // Use current zoom for coordinates
+                    const viewport = page.getViewport({ scale: state.view[side].scale });
+
+                    // Iterate through text items to find matches
+                    // We must loop to find multiple matches within a single item
+                    for (let itemIdx = 0; itemIdx < textContent.items.length; itemIdx++) {
+                        const item = textContent.items[itemIdx];
+                        const textStr = item.str.toLowerCase();
+                        
+                        if (textStr.includes(query)) {
+                            // Calculate base geometry for the text item
+                            const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+                            
+                            // Item dimensions
+                            const left = tx[4];
+                            const bottom = tx[5];
+                            const fontSize = Math.sqrt((tx[0] * tx[0]) + (tx[1] * tx[1]));
+                            const top = bottom - fontSize;
+                            
+                            // Find all occurrences of query in this item
+                            let searchIndex = 0;
+                            let matchIndex;
+                            while ((matchIndex = textStr.indexOf(query, searchIndex)) !== -1) {
+                                // --- Precise Highlight Calculation using measureText ---
+                                
+                                // 1. Get Font Info
+                                const cssFontFamily = getCssFontFamily(item.fontName);
+                                
+                                // 2. Configure Measurement Context
+                                measureCtx.font = `${fontSize}px ${cssFontFamily}`;
+                                
+                                // 3. Measure the prefix (text before the match)
+                                // This gives us the EXACT pixel offset of where the match starts
+                                const prefixStr = item.str.substring(0, matchIndex);
+                                const prefixWidth = measureCtx.measureText(prefixStr).width;
+                                
+                                // 4. Measure the match string itself
+                                const matchStr = item.str.substring(matchIndex, matchIndex + query.length);
+                                const matchWidth = measureCtx.measureText(matchStr).width;
+
+                                // 5. Calculate absolute positions
+                                const matchLeft = left + prefixWidth;
+                                
+                                allMatches.push({
+                                    page: i,
+                                    index: itemIdx, 
+                                    x: matchLeft,
+                                    y: top,
+                                    w: matchWidth,
+                                    h: fontSize
+                                });
+
+                                searchIndex = matchIndex + 1; // Find next occurrence
+                            }
+                        }
+                    }
+                } catch (e) { /* ignore page errors */ }
+            }
+
+            state.search[side].results = allMatches;
+            
+            // Determine starting index
+            let startIndex = 0;
+            if (targetPageNum) {
+                // If jumping from global search, find the first match on that specific page
+                startIndex = allMatches.findIndex(m => m.page === targetPageNum);
+            } else {
+                // Else, find the first match on current page
+                const currentMatches = allMatches.filter(m => m.page === state.view[side].pageNum);
+                if (currentMatches.length > 0) {
+                    startIndex = allMatches.indexOf(currentMatches[0]);
+                } else if (allMatches.length > 0) {
+                    // If no match on current page, go to first overall match
+                    startIndex = 0;
+                }
+            }
+            
+            if (startIndex === -1) startIndex = 0; // Fallback
+            state.search[side].index = startIndex;
+            
+            // If a target page was requested and we are not on it, switch page
+            const targetMatch = allMatches[startIndex];
+            if (targetPageNum && targetMatch && targetMatch.page !== state.view[side].pageNum) {
+                state.view[side].pageNum = targetMatch.page;
+                renderPage(side); // This will trigger renderSearchHighlights
+            } else {
+                renderSearchHighlights(side);
+            }
+            
+            updateSearchCount(side);
+        }
+
+        function clearSearchHighlights(side) {
+            document.getElementById(`${side}-search-layer`).innerHTML = '';
+        }
+
+        function renderSearchHighlights(side) {
+            const container = document.getElementById(`${side}-search-layer`);
+            container.innerHTML = '';
+            
+            // Filter results for current page only
+            const currentPage = state.view[side].pageNum;
+            const pageMatches = state.search[side].results.filter(m => m.page === currentPage);
+            
+            // Find which one is active based on global index
+            const activeGlobalIndex = state.search[side].index;
+            
+            pageMatches.forEach((res) => {
+                const globalIdx = state.search[side].results.indexOf(res);
+                const div = document.createElement('div');
+                div.className = 'search-highlight' + (globalIdx === activeGlobalIndex ? ' active' : '');
+                div.style.left = `${res.x}px`;
+                div.style.top = `${res.y}px`;
+                div.style.width = `${res.w}px`;
+                div.style.height = `${res.h}px`;
+                container.appendChild(div);
+            });
+        }
+
+        function updateSearchCount(side) {
+            const total = state.search[side].results.length;
+            const current = total > 0 ? state.search[side].index + 1 : 0;
+            document.getElementById(`${side}-search-count`).innerText = `${current}/${total}`;
+        }
+
+        function navigateSearchResult(side, dir) {
+            const results = state.search[side].results;
+            if (results.length === 0) return;
+            
+            let newIndex = state.search[side].index + dir;
+            if (newIndex < 0) newIndex = results.length - 1;
+            if (newIndex >= results.length) newIndex = 0;
+            
+            state.search[side].index = newIndex;
+            const match = results[newIndex];
+            
+            // Check if we need to change page
+            if (match.page !== state.view[side].pageNum) {
+                state.view[side].pageNum = match.page;
+                renderPage(side);
+            } else {
+                renderSearchHighlights(side);
+            }
+            updateSearchCount(side);
+        }
+
+        // Global Search
+        async function performGlobalSearch() {
+            const query = els.globalSearchInput.value.trim().toLowerCase();
+            const container = els.globalSearchResults;
+            container.innerHTML = '';
+
+            if (!query) {
+                container.classList.add('hidden');
+                return;
+            }
+
+            container.classList.remove('hidden');
+            container.innerHTML = '<div class="text-xs text-gray-400 p-2 text-center">Searching...</div>';
+
+            let allMatches = [];
+
+            for (const docId of Object.keys(state.documents)) {
+                const doc = state.documents[docId];
+                const maxPage = Math.min(doc.pageCount, 100); 
+                
+                for (let i = 1; i <= maxPage; i++) {
+                    try {
+                        const page = await doc.pdfDoc.getPage(i);
+                        const textContent = await page.getTextContent();
+                        const foundOnPage = textContent.items.some(item => item.str.toLowerCase().includes(query));
+                        if (foundOnPage) {
+                            allMatches.push({
+                                docId: docId,
+                                docName: doc.name,
+                                page: i
+                            });
+                        }
+                    } catch(e) { /* ignore */ }
+                }
+            }
+
+            container.innerHTML = '';
+            if (allMatches.length === 0) {
+                container.innerHTML = '<div class="text-xs text-gray-500 p-2">No matches found.</div>';
+                return;
+            }
+
+            allMatches.forEach(match => {
+                const div = document.createElement('div');
+                div.className = 'p-2 border-b border-gray-100 search-result-item hover:bg-blue-50';
+                div.innerHTML = `
+                    <div class="font-bold text-xs text-gray-700 truncate">${match.docName}</div>
+                    <div class="text-[10px] text-blue-600">Page ${match.page}</div>
+                `;
+                div.onclick = async () => {
+                    const side = state.lastActiveSide;
+                    state.view[side].docId = match.docId;
+                    state.view[side].pageNum = match.page;
+                    state.view[side].scrollTop = 0;
+                    
+                    // Open Search UI
+                    const input = document.getElementById(`${side}-search-input`);
+                    input.value = query;
+                    input.classList.remove('hidden');
+                    document.getElementById(`${side}-search-nav`).classList.remove('hidden');
+
+                    // Run Full Doc Search and Highlight
+                    await performViewportSearch(side, match.page);
+                    
+                    renderPage(side);
+                    renderDocList();
+                };
+                container.appendChild(div);
+            });
         }
 
         async function init() {
@@ -742,6 +1164,16 @@
             els.imageInput.addEventListener('change', handleImageUpload);
             els.importInput.addEventListener('change', handleProjectImport);
             
+            // Search Listeners
+            els.globalSearchInput.addEventListener('input', debounce(performGlobalSearch, 300));
+            ['left', 'right'].forEach(side => {
+                document.getElementById(`${side}-search-input`).addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') performViewportSearch(side);
+                    if (e.key === 'Escape') closeViewportSearch(side);
+                });
+                document.getElementById(`${side}-search-input`).addEventListener('input', debounce(() => performViewportSearch(side), 500));
+            });
+
             window.addEventListener('paste', handlePaste);
             window.addEventListener('pointerdown', handlePointerDown);
             window.addEventListener('pointermove', handlePointerMove);
@@ -884,22 +1316,18 @@
 
         function handlePaste(e) {
             if (state.appMode !== 'annotation') return;
-
             const items = (e.clipboardData || e.originalEvent.clipboardData).items;
             for (let item of items) {
                 if (item.kind === 'file' && item.type.startsWith('image/')) {
                     const blob = item.getAsFile();
                     let targetSide = state.lastActiveSide; 
                     const wrapper = e.target.closest('.pdf-canvas-container') || e.target.closest('#left-canvas-wrapper') || e.target.closest('#right-canvas-wrapper');
-                    
                     if (wrapper) {
                         if (wrapper.id === 'left-canvas-wrapper' || wrapper.id === 'left-viewport') targetSide = 'left';
                         else if (wrapper.id === 'right-canvas-wrapper' || wrapper.id === 'right-viewport') targetSide = 'right';
                     }
-
-                    if (state.view[targetSide] && state.view[targetSide].docId) {
-                        addImageToSide(blob, targetSide);
-                    } else {
+                    if (state.view[targetSide] && state.view[targetSide].docId) addImageToSide(blob, targetSide);
+                    else {
                         const otherSide = targetSide === 'left' ? 'right' : 'left';
                         if (state.view[otherSide].docId) addImageToSide(blob, otherSide);
                     }
@@ -942,7 +1370,6 @@
                     state.annotations[docId][pageNum].images.push(newImage);
                     state.imageCache[id] = imgObj;
                     
-                    // Auto-select single image
                     clearSelection();
                     state.selection = {
                         active: true,
@@ -1012,6 +1439,7 @@
             state.view[side].scrollTop = 0; 
             state.lastActiveSide = side;
             clearSelection();
+            closeViewportSearch(side); 
             saveSettings(); 
             if (render) {
                 renderPage(side);
@@ -1026,10 +1454,12 @@
             const ctx = canvas.getContext('2d');
             const annoCanvas = els[side + 'AnnoCanvas'];
             const annoCtx = annoCanvas.getContext('2d');
+            const textLayer = els[side + 'TextLayer'];
 
             if (!docId || !state.documents[docId]) {
                 canvas.width = 0; canvas.height = 0;
                 annoCanvas.width = 0; annoCanvas.height = 0;
+                textLayer.innerHTML = '';
                 els[side + 'Title'].innerText = 'None';
                 els[side + 'PageInd'].innerText = '-- / --';
                 document.getElementById(side + '-markers-layer').innerHTML = '';
@@ -1042,7 +1472,6 @@
 
             try {
                 const page = await doc.pdfDoc.getPage(viewState.pageNum);
-                // Use Dynamic Scale
                 const scale = viewState.scale || 1.5;
                 const viewport = page.getViewport({ scale: scale }); 
 
@@ -1053,8 +1482,19 @@
                 wrapper.style.width = `${viewport.width}px`;
                 wrapper.style.height = `${viewport.height}px`;
 
+                // Render PDF
                 const renderContext = { canvasContext: ctx, viewport: viewport };
                 await page.render(renderContext).promise;
+
+                // Render Text Layer
+                const textContent = await page.getTextContent();
+                renderTextLayerCustom(textContent, textLayer, viewport);
+
+                // Re-run search if query exists
+                const searchInput = document.getElementById(`${side}-search-input`);
+                if (!searchInput.classList.contains('hidden') && searchInput.value) {
+                    renderSearchHighlights(side);
+                }
 
                 const viewportEl = els[side + 'Viewport'];
                 if (viewState.scrollTop) viewportEl.scrollTop = viewState.scrollTop;
@@ -1190,13 +1630,11 @@
                     const sw = bbox.w * width;
                     const sh = bbox.h * height;
 
-                    // Border
                     ctx.strokeStyle = '#3b82f6';
                     ctx.lineWidth = 2;
                     ctx.setLineDash([]);
                     ctx.strokeRect(sx, sy, sw, sh);
 
-                    // Resize Handle (Bottom Right)
                     ctx.fillStyle = '#3b82f6';
                     ctx.fillRect(sx + sw - 8, sy + sh - 8, 16, 16);
                 }
@@ -1335,7 +1773,6 @@
                 if (!state.annotations[docId] || !state.annotations[docId][pageNum]) return;
                 const pageData = state.annotations[docId][pageNum];
 
-                // Delete Images
                 state.selection.selectedImages.forEach(imgObj => {
                     const idx = pageData.images.indexOf(imgObj);
                     if(idx > -1) {
@@ -1344,7 +1781,6 @@
                     }
                 });
 
-                // Delete Strokes
                 state.selection.selectedStrokes.forEach(strokeObj => {
                     const idx = pageData.strokes.indexOf(strokeObj);
                     if(idx > -1) pageData.strokes.splice(idx, 1);
@@ -1428,7 +1864,7 @@
                 const newPdfBytes = await pdfLibDoc.save();
                 const newBlob = new Blob([newPdfBytes], { type: 'application/pdf' });
 
-                // 1. Shift Annotations
+                // Shift Annotations
                 if (state.annotations[docId]) {
                     const newAnnoMap = {};
                     Object.keys(state.annotations[docId]).forEach(key => {
@@ -1443,7 +1879,7 @@
                     await saveAnnotationsToDB(docId, state.annotations[docId]);
                 }
 
-                // 2. Shift Links
+                // Shift Links
                 const updatedLinks = [];
                 for (const link of state.links) {
                     const updatePoint = (pt) => {
@@ -1462,7 +1898,7 @@
                 }
                 state.links = updatedLinks;
 
-                // 3. Reload Document
+                // Reload Document
                 const newPdfJsDoc = await pdfjsLib.getDocument(newPdfBytes).promise;
 
                 state.documents[docId].file = newBlob;
@@ -1507,7 +1943,7 @@
                 const zip = new JSZip();
 
                 const metadata = {
-                    version: "2.2", // Increment version for layout data
+                    version: "2.3", 
                     timestamp: Date.now(),
                     links: state.links,
                     annotations: state.annotations,
@@ -1626,7 +2062,6 @@
                     if (metadata.annotations) {
                         state.annotations = metadata.annotations;
                         state.imageCache = {}; 
-
                         Object.values(state.annotations).forEach(pages => {
                             Object.values(pages).forEach(pageData => {
                                 if(pageData.images) {
@@ -1704,7 +2139,6 @@
         }
 
         function handlePointerDown(e) {
-            // Ignore if interacting with UI elements
             if (e.target.closest('.link-marker') || e.target.closest('#vertical-resizer')) return;
             if (e.target.closest('button') || e.target.closest('input')) return;
 
@@ -1752,19 +2186,16 @@
                     const pageData = state.annotations[state.view[clickedSide].docId]?.[state.view[clickedSide].pageNum];
                     let actionTaken = false;
 
-                    // 1. Check for existing selection interaction (Resize Handle or Body)
                     if (state.selection.active && state.selection.side === clickedSide) {
                         const bbox = state.selection.boundingBox;
-                        // Check Resize Handle
-                        const handleSize = 0.02; // Normalized size
+                        const handleSize = 0.02; 
                         const right = bbox.x + bbox.w;
                         const bottom = bbox.y + bbox.h;
                         
                         if (pos.x >= right - handleSize && pos.x <= right + handleSize &&
                             pos.y >= bottom - handleSize && pos.y <= bottom + handleSize) {
-                            
                             state.selection.mode = 'resizing';
-                            state.selection.dragStartMouse = { x: pos.x, y: pos.y }; // Normalized
+                            state.selection.dragStartMouse = { x: pos.x, y: pos.y }; 
                             state.selection.dragStartPositions = {
                                 bbox: { ...bbox },
                                 images: state.selection.selectedImages.map(img => ({ ...img })),
@@ -1772,7 +2203,6 @@
                             };
                             actionTaken = true;
                         } 
-                        // Check Group Box Body (Drag)
                         else if (pos.x >= bbox.x && pos.x <= bbox.x + bbox.w &&
                                  pos.y >= bbox.y && pos.y <= bbox.y + bbox.h) {
                             state.selection.mode = 'dragging';
@@ -1781,9 +2211,7 @@
                         }
                     }
 
-                    // 2. Check Individual Items (Only if not acting on group)
                     if (!actionTaken && pageData) {
-                        // Check Images (Topmost first)
                         if (pageData.images) {
                             for (let i = pageData.images.length - 1; i >= 0; i--) {
                                 const img = pageData.images[i];
@@ -1804,7 +2232,6 @@
                         }
                     }
 
-                    // 3. Start Marquee Selection (Click on Empty Space)
                     if (!actionTaken) {
                         clearSelection();
                         state.selection = {
@@ -1852,7 +2279,6 @@
                         const dx = pos.x - state.selection.dragStartMouse.x;
                         const dy = pos.y - state.selection.dragStartMouse.y;
                         
-                        // Apply Delta to all selected items
                         state.selection.selectedImages.forEach(img => {
                             img.x += dx;
                             img.y += dy;
@@ -1864,7 +2290,6 @@
                             });
                         });
 
-                        // Update Bounding Box
                         state.selection.boundingBox.x += dx;
                         state.selection.boundingBox.y += dy;
 
@@ -1872,21 +2297,13 @@
                         renderAnnotations(side);
                     }
                     else if (state.selection.mode === 'resizing') {
-                        // --- RESIZING FIX START ---
                         const originalState = state.selection.dragStartPositions;
-                        
-                        // 1. Calculate the new intended width based on Mouse X relative to the box origin
                         const originX = originalState.bbox.x;
                         const originY = originalState.bbox.y;
-                        
-                        // Ensure minimum width to avoid negative logic
                         const newW = Math.max(0.01, pos.x - originX);
-                        
-                        // 2. Calculate Scale Factor based on Original Width
                         const scaleX = newW / originalState.bbox.w;
-                        const scaleY = scaleX; // Maintain Aspect Ratio
+                        const scaleY = scaleX; 
 
-                        // 3. Apply Scale to Images
                         state.selection.selectedImages.forEach((img, idx) => {
                             const oldImg = originalState.images[idx];
                             img.x = originX + (oldImg.x - originX) * scaleX;
@@ -1895,7 +2312,6 @@
                             img.h = oldImg.h * scaleY;
                         });
 
-                        // 4. Apply Scale to Strokes
                         state.selection.selectedStrokes.forEach((stk, idx) => {
                             const oldStk = originalState.strokes[idx];
                             stk.points.forEach((p, pIdx) => {
@@ -1905,10 +2321,8 @@
                             });
                         });
 
-                        // 5. Update Bounding Box to match mouse
                         state.selection.boundingBox.w = newW;
                         state.selection.boundingBox.h = originalState.bbox.h * scaleY;
-                        // --- RESIZING FIX END ---
                         
                         renderAnnotations(side);
                     }
@@ -1969,12 +2383,10 @@
             } 
             else if (state.appMode === 'annotation') {
                 if (state.annoTool === 'select') {
-                    // If finishing marquee, calculate selection
                     if (state.selection.mode === 'marquee') {
                         const start = state.selection.marqueeStart;
                         const curr = state.selection.marqueeCurrent;
                         
-                        // Normalize rect
                         const selRect = {
                             x: Math.min(start.x, curr.x),
                             y: Math.min(start.y, curr.y),
@@ -1993,7 +2405,6 @@
                                 let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
                                 let hasSelection = false;
 
-                                // Check Images
                                 if (pageData.images) {
                                     pageData.images.forEach(img => {
                                         const bounds = { x: img.x, y: img.y, w: img.w, h: img.h };
@@ -2008,7 +2419,6 @@
                                     });
                                 }
 
-                                // Check Strokes
                                 if (pageData.strokes) {
                                     pageData.strokes.forEach(stk => {
                                         if (stk.tool === 'eraser-pixel') return;
@@ -2033,7 +2443,7 @@
                                         w: maxX - minX,
                                         h: maxY - minY
                                     };
-                                    state.selection.mode = 'idle';
+                                    state.selection.mode = 'idle'; 
                                 } else {
                                     clearSelection();
                                 }
@@ -2044,7 +2454,6 @@
                             clearSelection();
                         }
                     } else {
-                        // Finishing Drag or Resize
                         state.selection.mode = 'idle';
                         const docId = state.view[side].docId;
                         saveAnnotationsToDB(docId, state.annotations[docId]);

@@ -3,22 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF Linker Studio (AI + Persistent Embeddings)</title>
+    <title>PDF Linker Studio (AI + SQLite Storage)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- PDF.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <!-- PDF-Lib (For Editing) -->
     <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
-    <!-- JSZip (For Bundling) -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-    <!-- FileSaver.js (Fallback) -->
+    <!-- SQL.js (For Project Storage) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
+    <!-- FileSaver.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
     <!-- FontAwesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
     <style>
-        /* --- Original Scrollbar & Layout Styles --- */
+        /* --- Scrollbar & Layout Styles --- */
         ::-webkit-scrollbar { width: 8px; height: 8px; }
         ::-webkit-scrollbar-track { background: #f1f1f1; }
         ::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 4px; }
@@ -57,7 +57,7 @@
             background-color: rgba(255, 100, 0, 0.5); border: 2px solid rgb(255, 69, 0); z-index: 26;
         }
 
-        /* NEW: Citation Highlight Style (Purple/Gold mix to distinguish from search) */
+        /* Citation Highlight Style */
         .citation-highlight {
             background-color: rgba(236, 72, 153, 0.4); /* Pink-500 */
             border: 2px solid rgba(219, 39, 119, 0.8);
@@ -146,7 +146,7 @@
         .search-result-item:hover { background-color: #f3f4f6; }
         body.anno-text .annotation-canvas { cursor: text; }
 
-        /* --- NEW: AI Sidebar Styles --- */
+        /* --- AI Sidebar Styles --- */
         #ai-sidebar {
             width: 320px;
             transition: width 0.3s ease-in-out;
@@ -160,7 +160,7 @@
         .ai-message.user .ai-bubble { background-color: #3b82f6; color: white; border-bottom-right-radius: 0; }
         .ai-message.assistant .ai-bubble { background-color: #f3f4f6; color: #1f2937; border-bottom-left-radius: 0; border: 1px solid #e5e7eb; }
         
-        /* NEW: Citation Buttons in Chat */
+        /* Citation Buttons in Chat */
         .citation-chip {
             display: inline-block; background-color: #eff6ff; color: #2563eb;
             font-size: 0.75rem; padding: 2px 8px; border-radius: 12px; cursor: pointer;
@@ -267,7 +267,7 @@
             </button>
             <label class="text-gray-600 hover:text-blue-600 font-medium text-sm flex items-center gap-2 cursor-pointer border border-gray-200 hover:border-blue-300 px-3 py-1.5 rounded bg-white transition-colors">
                 <i class="fa-solid fa-folder-open"></i> Open
-                <input type="file" id="import-project-input" class="hidden" accept=".zip,.json">
+                <input type="file" id="import-project-input" class="hidden" accept=".sqlite">
             </label>
         </div>
     </header>
@@ -428,7 +428,7 @@
                 <div id="text-creation-rect" style="display:none; position:absolute; border: 1px dashed #3b82f6; background: rgba(59, 130, 246, 0.1); pointer-events:none;"></div>
             </svg>
 
-            <!-- NEW: AI Sidebar -->
+            <!-- AI Sidebar -->
             <aside id="ai-sidebar" class="bg-white border-l border-gray-200 flex flex-col shrink-0 z-20">
                 <!-- Header -->
                 <div class="h-12 border-b border-gray-200 flex items-center justify-between px-4 bg-gray-50">
@@ -485,8 +485,9 @@
         }
 
         const DB_NAME = 'PDFLinkerStudioDB';
-        const DB_VERSION = 15; // Updated Version for Embeddings Storage
+        const DB_VERSION = 15; 
         let db;
+        let SqlDb; // Global SQL.js instance
 
         async function initDB() {
             return new Promise((resolve, reject) => {
@@ -610,10 +611,10 @@
                 right: { query: '', results: [], index: -1, abortController: null }
             },
             measureCanvas: document.createElement('canvas'),
-            // --- NEW: AI State ---
+            // AI State
             embeddings: [],
             isIndexing: false,
-            currentContextChunks: [] // Stores chunks used in the last response for citations
+            currentContextChunks: []
         };
 
         const els = {
@@ -665,7 +666,6 @@
             rightZoomLevel: document.getElementById('right-zoom-level'),
             globalSearchInput: document.getElementById('global-search-input'),
             globalSearchResults: document.getElementById('global-search-results'),
-            // NEW: AI Elements
             chatHistory: document.getElementById('chat-history'),
             chatInput: document.getElementById('chat-input'),
             sendChatBtn: document.getElementById('send-chat-btn'),
@@ -673,7 +673,7 @@
             toggleAiSidebar: document.getElementById('toggle-ai-sidebar')
         };
 
-        // --- NEW: AI Helper Functions ---
+        // --- AI Helper Functions ---
         
         function cosineSimilarity(vecA, vecB) {
             let dotProduct = 0;
@@ -712,7 +712,7 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        model: "llama3.2:3b",
+                        model: "gemma3:1b",
                         prompt: prompt,
                         stream: false
                     })
@@ -728,7 +728,6 @@
         async function indexDocuments(force = false) {
             if (state.isIndexing) return;
             
-            // Check if we already have embeddings for current docs
             const docIds = Object.keys(state.documents);
             const embeddedDocIds = new Set(state.embeddings.map(e => e.docId));
             const needsIndexing = force || docIds.some(id => !embeddedDocIds.has(id));
@@ -745,7 +744,7 @@
             const overlap = 50;
 
             for (const docId of docIds) {
-                if (embeddedDocIds.has(docId) && !force) continue; // Skip if already indexed
+                if (embeddedDocIds.has(docId) && !force) continue; 
 
                 const doc = state.documents[docId];
                 const totalPages = Math.min(doc.pageCount, 50); 
@@ -794,11 +793,9 @@
             els.chatHistory.scrollTop = els.chatHistory.scrollHeight;
         }
 
-        // NEW: Highlighting Logic for Citations
         async function highlightChunk(text, side) {
             const layer = document.getElementById(`${side}-search-layer`);
-            layer.innerHTML = ''; // Clear previous
-
+            layer.innerHTML = ''; 
             const viewState = state.view[side];
             const docId = viewState.docId;
             if (!docId || !state.documents[docId]) return;
@@ -808,13 +805,8 @@
                 const textContent = await page.getTextContent();
                 const viewport = page.getViewport({ scale: viewState.scale });
                 
-                // Use the measure canvas context from state for accurate text measurement
                 const measureCtx = state.measureCanvas.getContext('2d');
-
-                // Search for the text chunk (first 100 chars should be unique enough for context)
                 const searchTerm = text.substring(0, 100).trim();
-
-                // Logic similar to performViewportSearch but specific for this text
                 let found = false;
                 for (let itemIdx = 0; itemIdx < textContent.items.length; itemIdx++) {
                     const item = textContent.items[itemIdx];
@@ -827,19 +819,17 @@
                         
                         const cssFontFamily = getCssFontFamily(item.fontName);
                         measureCtx.font = `${fontSize}px ${cssFontFamily}`;
-                        
-                        // Measure width of the specific matching text
                         const matchWidth = measureCtx.measureText(searchTerm).width;
 
                         const div = document.createElement('div');
-                        div.className = 'citation-highlight'; // Special style for citation
+                        div.className = 'citation-highlight'; 
                         div.style.left = `${left}px`;
                         div.style.top = `${top}px`;
                         div.style.width = `${matchWidth}px`;
                         div.style.height = `${fontSize}px`;
                         layer.appendChild(div);
                         found = true;
-                        break; // Highlight first occurrence
+                        break; 
                     }
                 }
             } catch (e) {
@@ -847,20 +837,15 @@
             }
         }
 
-        // Global function for Citation Links
         window.jumpToCitation = function(index) {
             const chunk = state.currentContextChunks[index];
             if (!chunk) return;
 
-            // 1. Open doc in Right Viewport
             state.view.right.docId = chunk.docId;
             state.view.right.pageNum = chunk.pageNum;
             
-            // 2. Render Page
             renderPage('right');
 
-            // 3. Highlight the specific chunk
-            // We delay slightly to ensure render is complete and coordinates are calculated
             setTimeout(() => {
                 highlightChunk(chunk.text, 'right');
             }, 100);
@@ -874,7 +859,6 @@
             els.chatInput.value = '';
             updateAIStatus("Thinking...");
 
-            // 1. Embed Question
             const questionVector = await getEmbedding(question);
             if (!questionVector) {
                 appendMessage('assistant', "Failed to generate embedding for question.");
@@ -882,15 +866,12 @@
                 return;
             }
 
-            // 2. Retrieve Top-K (3) Contexts
             const scoredEmbeddings = state.embeddings.map(emb => {
                 return { ...emb, score: cosineSimilarity(questionVector, emb.vector) };
-            }).sort((a, b) => b.score - a.score).slice(0, 3); // Top 3
+            }).sort((a, b) => b.score - a.score).slice(0, 3); 
 
-            // Store for later clicking
             state.currentContextChunks = scoredEmbeddings;
 
-            // 3. Construct Prompt with Numbered Sources
             const contextText = scoredEmbeddings.map((emb, idx) => 
                 `[${idx + 1}] Source: ${emb.docName} (Page ${emb.pageNum})\nText: ${emb.text}`
             ).join("\n---\n");
@@ -902,18 +883,13 @@
 
             const fullPrompt = `${systemPrompt}\n\nContext:\n${contextText}\n\nUser Question: ${question}\n\nAnswer:`;
 
-            // 4. Generate Answer
             const answer = await generateLLMResponse(fullPrompt);
 
-            // 5. Parse and Format Response with Links
-            // Convert [1], [2] etc to clickable spans
             const formattedAnswer = answer.replace(/\[(\d+)\]/g, (match, num) => {
                 return `<span class="citation-chip" onclick="jumpToCitation(${parseInt(num)-1})">${num}</span>`;
             });
 
             let contentHtml = formattedAnswer;
-
-            // Add source buttons explicitly at the bottom for clarity
             contentHtml += `<div class="mt-2 pt-2 border-t border-gray-200 flex flex-wrap gap-1">`;
             scoredEmbeddings.forEach((emb, idx) => {
                 contentHtml += `<span class="text-[10px] bg-blue-50 text-blue-600 border border-blue-200 px-2 py-1 rounded cursor-pointer hover:bg-blue-100" onclick="jumpToCitation(${idx})">
@@ -1296,7 +1272,6 @@
             updatedLinks.forEach(l => linkStore.put(l));
             state.links = updatedLinks;
 
-            // Also remove embeddings for this doc
             state.embeddings = state.embeddings.filter(e => e.docId !== id);
 
             if(state.view.left.docId === id) {
@@ -1347,7 +1322,7 @@
         async function deleteLink(linkId) {
             const idx = state.links.findIndex(l => l.id === linkId);
             if(idx !== -1) {
-                state.links.splice(idx, 1);
+                state.links.splice(idx,1);
                 await deleteLinkFromDB(linkId);
                 renderMarkersForView('left');
                 renderMarkersForView('right');
@@ -1393,7 +1368,6 @@
                     await saveAnnotationsToDB(docId, state.annotations[docId]);
                 }
 
-                // Also shift embeddings
                 state.embeddings.forEach(e => {
                     if (e.docId === docId && e.pageNum > pageNum) {
                         e.pageNum -= 1;
@@ -1578,8 +1552,27 @@
             }, 500);
         }
 
+        // Helper to convert Blob to Uint8Array for SQLite
+        const blobToUint8Array = async (blob) => {
+            const arrayBuffer = await blob.arrayBuffer();
+            return new Uint8Array(arrayBuffer);
+        };
+
+        // Helper to convert Uint8Array to Blob
+        const uint8ArrayToBlob = (u8Array, mimeType) => {
+            return new Blob([u8Array], { type: mimeType });
+        };
+
         async function init() {
             try {
+                // FIX: Initialize SQL.js globally so exportProject can access it
+                if (!window.SQL) {
+                    const SQL = await initSqlJs({
+                        locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`
+                    });
+                    window.SQL = SQL;
+                }
+
                 await initDB();
                 const savedData = await loadStateFromDB();
                 
@@ -1654,7 +1647,7 @@
                 els.loadingSpinner.classList.add('hidden');
 
             } catch (err) {
-                console.error("DB Init failed:", err);
+                console.error("Init failed:", err);
             }
 
             els.uploadInput.addEventListener('change', handleFileUpload);
@@ -1819,10 +1812,7 @@
                 }
             }
             
-            // --- TRIGGER INDEXING AFTER UPLOAD ---
             indexDocuments();
-            // --------------------------------------
-
             renderDocList();
             els.uploadInput.value = ''; 
         }
@@ -2383,7 +2373,6 @@
                     await saveAnnotationsToDB(docId, state.annotations[docId]);
                 }
 
-                // Shift embeddings
                 state.embeddings.forEach(e => {
                     if (e.docId === docId && e.pageNum > insertIndex) {
                         e.pageNum += 1;
@@ -2436,53 +2425,103 @@
             }
         }
 
-        async function exportProject() {
+        // --- SQLite Export Logic ---
+        window.exportProject = async function() {
             const docKeys = Object.keys(state.documents);
-            if (docKeys.length === 0) {
-                showModal("Export", "No documents loaded.");
-                return;
-            }
+            if (docKeys.length === 0) { showModal("Export", "No documents loaded."); return; }
 
             els.loadingSpinner.classList.remove('hidden');
-            els.loadingSpinner.querySelector('span').innerText = "Creating ZIP...";
+            els.loadingSpinner.querySelector('span').innerText = "Creating SQLite Database...";
 
             try {
-                const zip = new JSZip();
+                const db = new window.SQL.Database();
 
-                const metadata = {
-                    version: "2.20", // Version for Embeddings
-                    timestamp: Date.now(),
-                    links: state.links,
-                    annotations: state.annotations,
-                    splitRatio: state.splitRatio,
-                    settings: {
-                        id: 'appState',
-                        view: state.view,
-                        appMode: state.appMode,
-                        annoTool: state.annoTool,
-                        annoColor: state.annoColor,
-                        annoThickness: state.annoThickness
-                    },
-                    documents: {},
-                    embeddings: state.embeddings // NEW: Save embeddings
-                };
+                db.run(`
+                    CREATE TABLE documents (
+                        id TEXT PRIMARY KEY,
+                        name TEXT,
+                        pdf_blob BLOB,
+                        thumbnail TEXT
+                    );
+                `);
 
+                db.run(`
+                    CREATE TABLE links (
+                        id TEXT PRIMARY KEY,
+                        source_json TEXT,
+                        target_json TEXT
+                    );
+                `);
+
+                db.run(`
+                    CREATE TABLE annotations (
+                        doc_id TEXT,
+                        page_num INTEGER,
+                        data_json TEXT,
+                        PRIMARY KEY (doc_id, page_num)
+                    );
+                `);
+
+                db.run(`
+                    CREATE TABLE embeddings (
+                        id TEXT PRIMARY KEY,
+                        text TEXT,
+                        vector_json TEXT,
+                        doc_id TEXT,
+                        page_num INTEGER
+                    );
+                `);
+
+                db.run(`
+                    CREATE TABLE settings (
+                        key TEXT PRIMARY KEY,
+                        value TEXT
+                    );
+                `);
+
+                const stmtDoc = db.prepare("INSERT INTO documents VALUES (?, ?, ?, ?)");
                 for (const id of docKeys) {
                     const doc = state.documents[id];
-                    const safeFilename = `${id}.pdf`;
-                    metadata.documents[id] = {
-                        id: doc.id,
-                        name: doc.name,
-                        pageCount: doc.pageCount,
-                        thumbnail: doc.thumbnail,
-                        filename: safeFilename
-                    };
-                    zip.file(safeFilename, doc.file);
+                    const pdfArray = await blobToUint8Array(doc.file);
+                    stmtDoc.run([id, doc.name, pdfArray, doc.thumbnail]);
                 }
+                stmtDoc.free();
 
-                zip.file("project.json", JSON.stringify(metadata, null, 2));
+                const stmtLink = db.prepare("INSERT INTO links VALUES (?, ?, ?)");
+                for (const link of state.links) {
+                    stmtLink.run([link.id, JSON.stringify(link.source), JSON.stringify(link.target)]);
+                }
+                stmtLink.free();
 
-                const content = await zip.generateAsync({type:"blob"});
+                const stmtAnno = db.prepare("INSERT INTO annotations VALUES (?, ?, ?)");
+                for (const docId in state.annotations) {
+                    for (const pageNum in state.annotations[docId]) {
+                        stmtAnno.run([docId, pageNum, JSON.stringify(state.annotations[docId][pageNum])]);
+                    }
+                }
+                stmtAnno.free();
+
+                const stmtEmb = db.prepare("INSERT INTO embeddings VALUES (?, ?, ?, ?, ?)");
+                for (const emb of state.embeddings) {
+                    stmtEmb.run([emb.id, emb.text, JSON.stringify(emb.vector), emb.docId, emb.pageNum]);
+                }
+                stmtEmb.free();
+
+                const settings = {
+                    id: 'appState',
+                    view: state.view,
+                    splitRatio: state.splitRatio,
+                    appMode: state.appMode,
+                    annoTool: state.annoTool,
+                    annoColor: state.annoColor,
+                    annoThickness: state.annoThickness
+                };
+                const stmtSet = db.prepare("INSERT INTO settings VALUES (?, ?)");
+                stmtSet.run(['appState', JSON.stringify(settings)]);
+                stmtSet.free();
+
+                const data = db.export();
+                const blob = new Blob([data], { type: 'application/x-sqlite3' });
                 
                 let handle = state.projectFileHandle;
                 
@@ -2490,8 +2529,8 @@
                     try {
                         if (window.showSaveFilePicker) {
                             handle = await window.showSaveFilePicker({
-                                suggestedName: 'pdf_linker_project.zip',
-                                types: [{ description: 'Project Archive', accept: {'application/zip': ['.zip']}}],
+                                suggestedName: 'pdf_linker_project.sqlite',
+                                types: [{ description: 'SQLite Database', accept: {'application/x-sqlite3': ['.sqlite']}}],
                             });
                         } else {
                             throw new Error("API not supported");
@@ -2507,10 +2546,10 @@
 
                 try {
                     const writable = await handle.createWritable();
-                    await writable.write(content);
+                    await writable.write(blob);
                     await writable.close();
                     state.projectFileHandle = handle;
-                    showModal("Saved", "Project saved successfully with embeddings!");
+                    showModal("Saved", "Project saved successfully as SQLite database!");
                 } catch (writeErr) {
                     console.error(writeErr);
                     throw new Error("Write failed");
@@ -2519,129 +2558,143 @@
             } catch (err) {
                 console.error("Save Error:", err);
                 try {
-                    const content = await zip.generateAsync({type:"blob"}); 
-                    saveAs(content, "pdf_linker_project.zip");
-                    showModal("Download Complete", "Project downloaded.");
+                    const data = db.export(); 
+                    const blob = new Blob([data], { type: 'application/x-sqlite3' });
+                    saveAs(blob, "pdf_linker_project.sqlite");
+                    showModal("Download", "Project downloaded.");
                 } catch (fallbackErr) {
-                    showModal("Error", "Could not save or download project.");
+                     showModal("Error", "Failed to save project.");
                 }
             } finally {
                 els.loadingSpinner.classList.add('hidden');
             }
-        }
+        };
 
+        // --- CORRECTED SQLite Import Logic ---
         async function handleProjectImport(e) {
             const file = e.target.files[0];
             if (!file) return;
 
             els.loadingSpinner.classList.remove('hidden');
-            els.loadingSpinner.querySelector('span').innerText = "Loading Project...";
+            els.loadingSpinner.querySelector('span').innerText = "Loading SQLite Project...";
 
             try {
-                const isZip = file.name.endsWith('.zip');
+                const arrayBuffer = await file.arrayBuffer();
+                const u8array = new Uint8Array(arrayBuffer);
+                const db = new window.SQL.Database(u8array);
 
-                if (isZip) {
-                    const zip = await JSZip.loadAsync(file);
-                    const metaFile = zip.file("project.json");
-                    if (!metaFile) throw new Error("Invalid ZIP: project.json not found.");
-                    
-                    const metaString = await metaFile.async("string");
-                    const metadata = JSON.parse(metaString);
-
-                    for (const [id, docInfo] of Object.entries(metadata.documents)) {
-                        const pdfFile = zip.file(docInfo.filename);
-                        if (pdfFile) {
-                            const blob = await pdfFile.async("blob");
-                            const arrayBuffer = await blob.arrayBuffer();
-                            const pdfDoc = await pdfjsLib.getDocument(arrayBuffer).promise;
-
-                            state.documents[id] = {
-                                id: id,
-                                file: blob,
-                                pdfDoc: pdfDoc,
-                                name: docInfo.name,
-                                pageCount: pdfDoc.numPages,
-                                thumbnail: docInfo.thumbnail
-                            };
-                            await saveDocumentToDB({ id: id, name: docInfo.name, pageCount: docInfo.pageCount, thumbnail: docInfo.thumbnail, fileBlob: blob });
-                        }
-                    }
-
-                    if (metadata.annotations) {
-                        state.annotations = metadata.annotations;
-                        Object.values(state.annotations).forEach(pages => {
-                            Object.values(pages).forEach(pageData => {
-                                if(!pageData.textBoxes) pageData.textBoxes = [];
-                                if(pageData.images) {
-                                    pageData.images.forEach(img => {
-                                        const imageObj = new Image();
-                                        imageObj.src = img.src;
-                                        state.imageCache[img.id] = imageObj;
-                                    });
-                                }
-                            });
-                        });
-                        for (const [docId, data] of Object.entries(state.annotations)) {
-                            saveAnnotationsToDB(docId, data);
-                        }
-                    }
-
-                    if (metadata.links) {
-                        state.links = metadata.links;
-                        for (const link of state.links) {
-                            await saveLinkToDB(link);
-                        }
-                    }
-
-                    // NEW: Load Embeddings
-                    if (metadata.embeddings) {
-                        state.embeddings = metadata.embeddings || [];
-                        console.log("Loaded embeddings:", state.embeddings.length);
-                    }
-
-                    if (metadata.splitRatio) {
-                        state.splitRatio = metadata.splitRatio;
-                        els.leftPanel.style.width = (state.splitRatio * 100) + '%';
-                        els.rightPanel.style.width = ((1 - state.splitRatio) * 100) + '%';
-                    }
-
-                    if (metadata.settings) {
-                        const s = metadata.settings;
-                        state.view = s.view;
-                        state.appMode = s.appMode;
-                        state.annoTool = s.annoTool;
-                        state.annoColor = s.annoColor;
-                        state.annoThickness = s.annoThickness;
+                // Load Documents
+                const docRows = db.exec("SELECT * FROM documents");
+                if (docRows.length > 0) {
+                    // FIX: Access .values property
+                    const rows = docRows[0].values;
+                    for (let i = 0; i < rows.length; i++) {
+                        const [id, name, blobData, thumb] = rows[i];
                         
-                        setAppMode(state.appMode, false);
-                        setAnnoTool(state.annoTool, false);
-                        els.colorPicker.value = state.annoColor;
-                        els.thicknessPicker.value = s.annoThickness;
-                        saveSettings(); 
+                        const blob = uint8ArrayToBlob(blobData, 'application/pdf');
+                        const pdfArrayBuffer = await blob.arrayBuffer();
+                        const pdfDoc = await pdfjsLib.getDocument(pdfArrayBuffer).promise;
+
+                        state.documents[id] = {
+                            id, name, file: blob, pdfDoc, 
+                            pageCount: pdfDoc.numPages, thumbnail: thumb
+                        };
+                        await saveDocumentToDB({ id, name, pageCount: pdfDoc.numPages, thumbnail: thumb, fileBlob: blob });
                     }
-                    state.projectFileHandle = null;
-                    showModal("Import Success", "Project loaded from ZIP.");
-                } else {
-                    showModal("Import Error", "Please use ZIP export format.");
                 }
 
-                if (isZip) {
-                    renderDocList();
-                    updateZoomIndicator('left');
-                    updateZoomIndicator('right');
-                    if (state.view.left.docId) renderPage('left');
-                    if (state.view.right.docId) renderPage('right');
-                    
-                    // Trigger indexing for any NEW docs that might not be in the loaded embeddings
-                    // But here we prioritize loading the state. 
-                    // If embeddings are missing for a doc, user can force re-index or we auto-detect.
-                    // For this version, we trust the loaded embeddings, or we can run a check:
-                    indexDocuments(false); // check for missing
+                // Load Annotations
+                const annoRows = db.exec("SELECT * FROM annotations");
+                if (annoRows.length > 0) {
+                    const rows = annoRows[0].values;
+                    for (let i = 0; i < rows.length; i++) {
+                        const [docId, pageNum, json] = rows[i];
+                        
+                        if (!state.annotations[docId]) state.annotations[docId] = {};
+                        const data = JSON.parse(json);
+                        state.annotations[docId][pageNum] = data;
+                        
+                        // Rehydrate images
+                        if (data.images) {
+                            data.images.forEach(img => {
+                                const imageObj = new Image();
+                                imageObj.src = img.src;
+                                state.imageCache[img.id] = imageObj;
+                            });
+                        }
+                        if (!data.textBoxes) data.textBoxes = [];
+                        
+                        await saveAnnotationsToDB(docId, state.annotations[docId]);
+                    }
                 }
+
+                // Load Links
+                const linkRows = db.exec("SELECT * FROM links");
+                if (linkRows.length > 0) {
+                    const rows = linkRows[0].values;
+                    for (let i = 0; i < rows.length; i++) {
+                        const [id, srcJson, tgtJson] = rows[i];
+                        state.links.push({
+                            id,
+                            source: JSON.parse(srcJson),
+                            target: JSON.parse(tgtJson)
+                        });
+                        await saveLinkToDB(state.links[state.links.length-1]);
+                    }
+                }
+
+                // Load Embeddings
+                const embRows = db.exec("SELECT * FROM embeddings");
+                if (embRows.length > 0) {
+                    const rows = embRows[0].values;
+                    for (let i = 0; i < rows.length; i++) {
+                        const [id, text, vecJson, dId, pNum] = rows[i];
+                        state.embeddings.push({
+                            id,
+                            text,
+                            vector: JSON.parse(vecJson),
+                            docId: dId,
+                            pageNum: pNum
+                        });
+                    }
+                }
+
+                // Load Settings
+                const setRows = db.exec("SELECT * FROM settings WHERE key='appState'");
+                if (setRows.length > 0) {
+                    const rows = setRows[0].values;
+                    const s = JSON.parse(rows[0][1]);
+                    state.view = s.view;
+                    state.splitRatio = s.splitRatio;
+                    state.appMode = s.appMode;
+                    state.annoTool = s.annoTool;
+                    state.annoColor = s.annoColor;
+                    state.annoThickness = s.annoThickness;
+                    
+                    els.leftPanel.style.width = (state.splitRatio * 100) + '%';
+                    els.rightPanel.style.width = ((1 - state.splitRatio) * 100) + '%';
+                    
+                    setAppMode(state.appMode, false);
+                    setAnnoTool(state.annoTool, false);
+                    els.colorPicker.value = state.annoColor;
+                    els.thicknessPicker.value = s.annoThickness;
+                    saveSettings(); 
+                }
+
+                state.projectFileHandle = null;
+                showModal("Import Success", "Project loaded from SQLite.");
+                
+                renderDocList();
+                updateZoomIndicator('left');
+                updateZoomIndicator('right');
+                if (state.view.left.docId) renderPage('left');
+                if (state.view.right.docId) renderPage('right');
+                
+                indexDocuments(false);
 
             } catch (err) {
                 console.error(err);
-                showModal("Import Error", "Failed to load project.");
+                showModal("Import Error", "Failed to load project. Ensure it is a valid .sqlite file.");
             } finally {
                 els.loadingSpinner.classList.add('hidden');
             }

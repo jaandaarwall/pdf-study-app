@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF Linker Studio (Uniform Scrolling)</title>
+    <title>PDF Linker Studio (AI + Persistent Embeddings)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- PDF.js -->
@@ -18,292 +18,162 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
     <style>
-        /* Custom Scrollbar */
-        ::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
-        }
-        ::-webkit-scrollbar-track {
-            background: #f1f1f1; 
-        }
-        ::-webkit-scrollbar-thumb {
-            background: #c1c1c1; 
-            border-radius: 4px;
-        }
-        ::-webkit-scrollbar-thumb:hover {
-            background: #a8a8a8; 
-        }
+        /* --- Original Scrollbar & Layout Styles --- */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #a8a8a8; }
 
-        /* Canvas Styles */
         .pdf-canvas {
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
             transition: transform 0.2s;
             display: block;
         }
 
-        /* --- Text Layer (Selectable Text) --- */
+        /* --- Text Layer --- */
         .textLayer {
-            position: absolute;
-            left: 0;
-            top: 0;
-            right: 0;
-            bottom: 0;
-            overflow: hidden;
-            line-height: 1.0;
-            opacity: 1;
-            z-index: 20; 
-            mix-blend-mode: multiply;
+            position: absolute; left: 0; top: 0; right: 0; bottom: 0;
+            overflow: hidden; line-height: 1.0; opacity: 1; z-index: 20; mix-blend-mode: multiply;
         }
-        
         .textLayer > span {
-            color: transparent;
-            position: absolute;
-            white-space: pre;
-            cursor: text;
-            transform-origin: 0% 0%;
-            font-family: sans-serif; 
+            color: transparent; position: absolute; white-space: pre; cursor: text;
+            transform-origin: 0% 0%; font-family: sans-serif;
         }
+        .textLayer ::selection { background: rgba(59, 130, 246, 0.3); color: transparent; }
 
-        /* Text Selection Color */
-        .textLayer ::selection {
-            background: rgba(59, 130, 246, 0.3); 
-            color: transparent;
-        }
+        body:not(.linking-mode):not(.annotation-mode):not(.delete-link-mode) .textLayer { user-select: text; }
+        body.linking-mode .textLayer, body.annotation-mode .textLayer, body.delete-link-mode .textLayer { user-select: none; }
+        body.linking-mode .textLayer span { cursor: crosshair !important; }
+        body.annotation-mode .textLayer { pointer-events: none; }
+        body:not(.annotation-mode) .textLayer span { cursor: text; }
 
-        /* --- Selection Mode Logic --- */
-        /* By default (Navigation Mode), allow text selection */
-        body:not(.linking-mode):not(.annotation-mode):not(.delete-link-mode) .textLayer {
-            user-select: text;
-        }
-        
-        /* Disable text selection in Linking, Annotation, and Delete modes */
-        body.linking-mode .textLayer,
-        body.annotation-mode .textLayer,
-        body.delete-link-mode .textLayer {
-            user-select: none;
-        }
-
-        /* Force crosshair cursor in Linking Mode even over text */
-        body.linking-mode .textLayer span {
-            cursor: crosshair !important;
-        }
-
-        body.annotation-mode .textLayer {
-            pointer-events: none; /* Keep this so you can draw over text */
-        }
-
-        body:not(.annotation-mode) .textLayer span {
-            cursor: text;
-        }
-        
         /* --- Search Highlights --- */
-        .search-highlight-layer {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: 25;
-            pointer-events: none; 
-        }
-
+        .search-highlight-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 25; pointer-events: none; }
         .search-highlight {
-            background-color: rgba(255, 255, 0, 0.4);
-            position: absolute;
+            background-color: rgba(255, 255, 0, 0.4); position: absolute;
             border: 1px solid rgba(255, 200, 0, 0.6);
         }
-
         .search-highlight.active {
-            background-color: rgba(255, 100, 0, 0.5);
-            border: 2px solid rgb(255, 69, 0);
-            z-index: 26;
+            background-color: rgba(255, 100, 0, 0.5); border: 2px solid rgb(255, 69, 0); z-index: 26;
         }
 
-        /* Annotation Canvas Layer */
-        .annotation-canvas {
+        /* NEW: Citation Highlight Style (Purple/Gold mix to distinguish from search) */
+        .citation-highlight {
+            background-color: rgba(236, 72, 153, 0.4); /* Pink-500 */
+            border: 2px solid rgba(219, 39, 119, 0.8);
             position: absolute;
-            top: 0;
-            left: 0;
-            z-index: 55; 
-            pointer-events: none; 
-            touch-action: none; 
+            pointer-events: none;
+            z-index: 27;
         }
-        
-        /* Cursor styles */
-        body.annotation-mode .annotation-canvas {
-            pointer-events: auto;
-        }
-        body.anno-pen .annotation-canvas { cursor: crosshair; }
-        body.anno-pixel-eraser .annotation-canvas { cursor: crosshair; }
+
+        /* --- Annotation Canvas --- */
+        .annotation-canvas { position: absolute; top: 0; left: 0; z-index: 55; pointer-events: none; touch-action: none; }
+        body.annotation-mode .annotation-canvas { pointer-events: auto; }
+        body.anno-pen .annotation-canvas, body.anno-pixel-eraser .annotation-canvas { cursor: crosshair; }
         body.anno-stroke-eraser .annotation-canvas { cursor: grab; }
         body.anno-stroke-eraser .annotation-canvas:active { cursor: grabbing; }
         body.anno-select .annotation-canvas { cursor: default; }
         body.anno-select .annotation-canvas:active { cursor: grabbing; }
 
-        /* --- Delete Link Mode Styles --- */
-        body.delete-link-mode .link-marker {
-            cursor: pointer !important;
+        /* --- Text Box Styles --- */
+        .text-box {
+            position: absolute; background: transparent; border: 1px dashed #9ca3af; z-index: 60;
+            cursor: text; overflow: hidden; padding: 4px; font-family: sans-serif;
+            line-height: 1.2; word-wrap: break-word; white-space: pre-wrap; box-sizing: border-box;
         }
+        .text-box:focus { outline: none; border: 1px solid #3b82f6; }
+        
+        body.anno-text .text-box:hover::before, body.anno-text .text-box:focus::before,
+        body.anno-text .text-box:hover::after, body.anno-text .text-box:focus::after { opacity: 1; }
+
+        .text-box::before {
+            content: ''; position: absolute; top: -6px; left: -6px; width: 12px; height: 12px;
+            background-color: #3b82f6; border: 1px solid white; border-radius: 50%;
+            cursor: move; opacity: 0; transition: opacity 0.2s; pointer-events: auto; z-index: 61;
+        }
+        .text-box::after {
+            content: ''; position: absolute; bottom: 0; right: 0; width: 0; height: 0;
+            border-style: solid; border-width: 0 0 12px 12px;
+            border-color: transparent transparent #3b82f6 transparent;
+            cursor: nwse-resize; opacity: 0; transition: opacity 0.2s; pointer-events: auto; z-index: 61;
+        }
+
+        body.anno-select .text-box.selected { border: 2px solid #3b82f6; cursor: move; }
+        body.anno-select .text-box.selected::after { opacity: 1; background-color: #3b82f6; }
+
+        /* --- Link Styles --- */
+        body.delete-link-mode .link-marker { cursor: pointer !important; }
         body.delete-link-mode .link-marker:hover {
-            background-color: #dc2626 !important;
-            border-color: #991b1b !important;
+            background-color: #dc2626 !important; border-color: #991b1b !important;
             transform: translate(-50%, -50%) scale(1.2) rotate(45deg);
             box-shadow: 0 0 10px rgba(220, 38, 38, 0.8);
         }
-
-        /* Link Button Marker */
         .link-marker {
-            position: absolute;
-            width: 28px;
-            height: 28px;
-            background-color: #ef4444; 
-            border: 2px solid white;
-            border-radius: 50%;
-            transform: translate(-50%, -50%);
-            pointer-events: auto !important; 
-            cursor: pointer;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.4);
-            z-index: 60; 
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 12px;
-            color: white;
-            transition: all 0.2s ease-in-out;
+            position: absolute; width: 28px; height: 28px; background-color: #ef4444;
+            border: 2px solid white; border-radius: 50%; transform: translate(-50%, -50%);
+            pointer-events: auto !important; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.4);
+            z-index: 59; display: flex; align-items: center; justify-content: center;
+            font-size: 12px; color: white; transition: all 0.2s ease-in-out;
         }
+        .link-marker:hover { background-color: #dc2626; transform: translate(-50%, -50%) scale(1.15); z-index: 61; }
         
-        .link-marker:hover {
-            background-color: #dc2626; 
-            transform: translate(-50%, -50%) scale(1.15);
-            z-index: 61;
-            box-shadow: 0 6px 8px rgba(0,0,0,0.5);
-        }
-
-        /* Active Highlight Animation */
         @keyframes markerPulse {
             0% { transform: translate(-50%, -50%) scale(1); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7); }
             70% { transform: translate(-50%, -50%) scale(1.4); box-shadow: 0 0 0 15px rgba(59, 130, 246, 0); }
             100% { transform: translate(-50%, -50%) scale(1); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
         }
+        .marker-active { background-color: #3b82f6 !important; z-index: 100; animation: markerPulse 2s infinite; }
 
-        .marker-active {
-            background-color: #3b82f6 !important; 
-            z-index: 100;
-            animation: markerPulse 2s infinite;
-        }
-
-        /* Drawing Layer (For Links) */
-        #drawing-layer {
-            pointer-events: none; 
-        }
-        
-        /* FIX: Removed pointer-events: auto to allow click-through to scrollbars/buttons */
-        body.linking-mode #drawing-layer {
-            cursor: crosshair;
-        }
-        
-        body.linking-mode .pdf-canvas-container {
-            cursor: crosshair;
-        }
-        body.linking-mode .link-marker {
-            pointer-events: none; 
-            opacity: 0.5;
-        }
-
-        /* Sidebar Doc Item Actions */
-        .doc-item-actions {
-            opacity: 0;
-            transition: opacity 0.2s;
-            display: flex;
-            gap: 4px;
-        }
-        .group:hover .doc-item-actions {
-            opacity: 1;
-        }
-        
-        .action-btn {
-            width: 20px;
-            height: 20px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 4px;
-            font-size: 10px;
-            cursor: pointer;
-        }
+        /* --- Sidebar & UI Elements --- */
+        .doc-item-actions { opacity: 0; transition: opacity 0.2s; display: flex; gap: 4px; }
+        .group:hover .doc-item-actions { opacity: 1; }
+        .action-btn { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; border-radius: 4px; font-size: 10px; cursor: pointer; }
         .action-rename { background: #e0f2fe; color: #0369a1; }
         .action-rename:hover { background: #bae6fd; }
         .action-delete { background: #fee2e2; color: #b91c1c; }
         .action-delete:hover { background: #fecaca; }
-
-        /* Rename Input */
-        .rename-input {
-            width: 100%;
-            padding: 2px 4px;
-            font-size: 0.875rem;
-            border: 1px solid #3b82f6;
-            border-radius: 4px;
-            outline: none;
-            background-color: white;
-        }
-
-        /* Modal */
-        .modal-backdrop {
-            background-color: rgba(0,0,0,0.5);
-        }
-
-        /* Loading Spinner */
-        .spinner {
-            border: 4px solid rgba(0, 0, 0, 0.1);
-            width: 36px;
-            height: 36px;
-            border-radius: 50%;
-            border-left-color: #09f;
-            animation: spin 1s linear infinite;
-        }
+        .rename-input { width: 100%; padding: 2px 4px; font-size: 0.875rem; border: 1px solid #3b82f6; border-radius: 4px; outline: none; background-color: white; }
+        .modal-backdrop { background-color: rgba(0,0,0,0.5); }
+        .spinner { border: 4px solid rgba(0, 0, 0, 0.1); width: 36px; height: 36px; border-radius: 50%; border-left-color: #09f; animation: spin 1s linear infinite; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        #vertical-resizer { background-color: #e5e7eb; width: 6px; cursor: col-resize; transition: background-color 0.2s; z-index: 30; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+        #vertical-resizer:hover, #vertical-resizer.resizing { background-color: #3b82f6; }
+        #vertical-resizer::after { content: ''; width: 2px; height: 20px; background-color: #9ca3af; border-radius: 1px; }
+        #vertical-resizer:hover::after { background-color: white; }
+        body.resizing-active { user-select: none; cursor: col-resize; }
+        body.resizing-active * { cursor: col-resize !important; }
+        .search-result-item { cursor: pointer; }
+        .search-result-item:hover { background-color: #f3f4f6; }
+        body.anno-text .annotation-canvas { cursor: text; }
 
-        /* Resizer Styles */
-        #vertical-resizer {
-            background-color: #e5e7eb;
-            width: 6px;
-            cursor: col-resize;
-            transition: background-color 0.2s;
-            z-index: 30;
-            flex-shrink: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+        /* --- NEW: AI Sidebar Styles --- */
+        #ai-sidebar {
+            width: 320px;
+            transition: width 0.3s ease-in-out;
+            display: flex; flex-direction: column;
         }
-        #vertical-resizer:hover, #vertical-resizer.resizing {
-            background-color: #3b82f6;
-        }
-        #vertical-resizer::after {
-            content: '';
-            width: 2px;
-            height: 20px;
-            background-color: #9ca3af;
-            border-radius: 1px;
-        }
-        #vertical-resizer:hover::after {
-            background-color: white;
-        }
+        #chat-history { scroll-behavior: smooth; flex: 1; overflow-y: auto; }
+        .ai-message { display: flex; flex-direction: column; max-width: 90%; animation: fadeIn 0.3s ease; margin-bottom: 12px; }
+        .ai-message.user { align-self: flex-end; align-items: flex-end; }
+        .ai-message.assistant { align-self: flex-start; align-items: flex-start; }
+        .ai-bubble { padding: 8px 12px; border-radius: 8px; font-size: 0.85rem; line-height: 1.4; word-wrap: break-word; }
+        .ai-message.user .ai-bubble { background-color: #3b82f6; color: white; border-bottom-right-radius: 0; }
+        .ai-message.assistant .ai-bubble { background-color: #f3f4f6; color: #1f2937; border-bottom-left-radius: 0; border: 1px solid #e5e7eb; }
         
-        body.resizing-active {
-            user-select: none;
-            cursor: col-resize;
+        /* NEW: Citation Buttons in Chat */
+        .citation-chip {
+            display: inline-block; background-color: #eff6ff; color: #2563eb;
+            font-size: 0.75rem; padding: 2px 8px; border-radius: 12px; cursor: pointer;
+            margin: 0 2px; vertical-align: middle; text-decoration: none;
+            border: 1px solid #bfdbfe; transition: all 0.2s; font-weight: bold;
         }
-        body.resizing-active * {
-            cursor: col-resize !important;
-        }
+        .citation-chip:hover { background-color: #2563eb; color: white; }
 
-        /* Search Result Item */
-        .search-result-item {
-            cursor: pointer;
-        }
-        .search-result-item:hover {
-            background-color: #f3f4f6;
-        }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* Collapsed State for AI Sidebar */
+        body.ai-sidebar-collapsed #ai-sidebar { width: 0 !important; overflow: hidden; padding: 0; border: none; }
+        body.ai-sidebar-collapsed #toggle-ai-sidebar i { transform: rotate(180deg); }
     </style>
     <script>
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -342,12 +212,14 @@
 
             <!-- Annotation Sub-Tools -->
             <div id="anno-tools" class="hidden flex items-center gap-1 bg-white border border-gray-200 rounded-lg px-2 py-1 shadow-sm">
-                <!-- Tools -->
                 <button id="tool-select" class="w-8 h-8 rounded flex items-center justify-center text-gray-500 hover:bg-gray-100 transition-colors" onclick="setAnnoTool('select')" title="Select / Group / Move / Resize">
                     <i class="fa-solid fa-object-group"></i>
                 </button>
                 <button id="tool-pen" class="w-8 h-8 rounded flex items-center justify-center text-gray-500 hover:bg-gray-100 transition-colors" onclick="setAnnoTool('pen')" title="Pen">
                     <i class="fa-solid fa-pen-nib"></i>
+                </button>
+                <button id="tool-text" class="w-8 h-8 rounded flex items-center justify-center text-gray-500 hover:bg-gray-100 transition-colors" onclick="setAnnoTool('text')" title="Add Text Box">
+                    <i class="fa-solid fa-font"></i>
                 </button>
                 <button id="tool-eraser-pixel" class="w-8 h-8 rounded flex items-center justify-center text-gray-500 hover:bg-gray-100 transition-colors" onclick="setAnnoTool('eraser-pixel')" title="Pixel Eraser">
                     <i class="fa-solid fa-eraser"></i>
@@ -358,7 +230,6 @@
                 
                 <div class="w-px h-5 bg-gray-300 mx-1"></div>
 
-                <!-- Image Tool -->
                 <button onclick="document.getElementById('image-upload').click()" class="w-8 h-8 rounded flex items-center justify-center text-purple-600 hover:bg-purple-50 transition-colors" title="Add Image">
                     <i class="fa-regular fa-image"></i>
                 </button>
@@ -366,7 +237,6 @@
                 
                 <div class="w-px h-5 bg-gray-300 mx-1"></div>
 
-                <!-- Color & Thickness -->
                 <div class="relative w-8 h-8 overflow-hidden rounded-full border border-gray-300 shadow-sm cursor-pointer" title="Pen Color">
                     <input type="color" id="color-picker" class="absolute -top-2 -left-2 w-12 h-12 p-0 border-0 cursor-pointer" value="#ef4444">
                 </div>
@@ -379,7 +249,6 @@
 
                 <div class="w-px h-5 bg-gray-300 mx-1"></div>
 
-                <!-- Actions -->
                 <button onclick="deleteSelection()" class="w-8 h-8 rounded flex items-center justify-center text-red-600 hover:bg-red-50 hover:text-red-700 transition-colors" title="Delete Selection">
                     <i class="fa-solid fa-trash-can"></i>
                 </button>
@@ -452,7 +321,6 @@
                 <div class="h-10 bg-white border-b border-gray-300 flex items-center justify-between px-4 shrink-0 z-10">
                     <div class="flex items-center gap-2">
                         <span class="text-sm font-bold text-gray-600 truncate w-24" id="left-view-title">None</span>
-                        <!-- Viewport Search -->
                         <div class="relative group/search">
                             <input type="text" id="left-search-input" placeholder="Find..." class="hidden pl-6 pr-2 py-0.5 text-[10px] border border-gray-300 rounded w-24 focus:w-32 transition-all focus:outline-none focus:ring-1 focus:ring-blue-500">
                             <button id="left-search-toggle" onclick="toggleViewportSearch('left')" class="w-6 h-6 rounded hover:bg-gray-100 flex items-center justify-center text-gray-500 text-xs">
@@ -468,34 +336,25 @@
                     </div>
 
                     <div class="flex items-center gap-2">
-                        <!-- Zoom Controls -->
                         <div class="flex items-center bg-gray-50 rounded border border-gray-200">
-                            <button onclick="zoomViewport('left', -0.25)" class="px-1.5 py-0.5 hover:bg-gray-200 rounded text-gray-600 text-xs" title="Zoom Out"><i class="fa-solid fa-minus"></i></button>
+                            <button onclick="zoomViewport('left', -0.25)" class="px-1.5 py-0.5 hover:bg-gray-200 rounded text-gray-600 text-xs"><i class="fa-solid fa-minus"></i></button>
                             <span id="left-zoom-level" class="text-[10px] w-8 text-center font-mono text-gray-500">100%</span>
-                            <button onclick="zoomViewport('left', 0.25)" class="px-1.5 py-0.5 hover:bg-gray-200 rounded text-gray-600 text-xs" title="Zoom In"><i class="fa-solid fa-plus"></i></button>
+                            <button onclick="zoomViewport('left', 0.25)" class="px-1.5 py-0.5 hover:bg-gray-200 rounded text-gray-600 text-xs"><i class="fa-solid fa-plus"></i></button>
                             <div class="w-px h-3 bg-gray-300 mx-0.5"></div>
                             <button onclick="resetZoom('left')" class="px-1.5 py-0.5 hover:bg-blue-100 text-blue-600 rounded text-xs" title="Fit Width"><i class="fa-solid fa-expand"></i></button>
                         </div>
 
                         <div class="w-px h-4 bg-gray-300 mx-1"></div>
 
-                        <!-- Navigation Controls -->
                         <button onclick="navigatePage('left', -1)" class="p-1 hover:bg-gray-100 rounded text-gray-600"><i class="fa-solid fa-chevron-left"></i></button>
                         <span id="left-page-indicator" class="text-xs text-gray-500 w-16 text-center">-- / --</span>
                         <button onclick="navigatePage('left', 1)" class="p-1 hover:bg-gray-100 rounded text-gray-600"><i class="fa-solid fa-chevron-right"></i></button>
                         
                         <div class="w-px h-4 bg-gray-300 mx-1"></div>
 
-                        <!-- Page Tools (Left) -->
-                        <button onclick="insertPage('left', 'blank')" class="p-1 hover:text-indigo-600 hover:bg-indigo-50 text-gray-400 rounded transition-colors" title="Insert Blank Page After Current">
-                            <i class="fa-regular fa-file-circle-plus text-sm"></i>
-                        </button>
-                        <button onclick="insertPage('left', 'duplicate')" class="p-1 hover:text-indigo-600 hover:bg-indigo-50 text-gray-400 rounded transition-colors" title="Duplicate Current Page">
-                            <i class="fa-regular fa-clone text-sm"></i>
-                        </button>
-                        <button onclick="deleteCurrentPage('left')" class="p-1 hover:text-red-600 hover:bg-red-50 text-gray-400 rounded transition-colors" title="Delete Current Page">
-                            <i class="fa-solid fa-trash-can text-sm"></i>
-                        </button>
+                        <button onclick="insertPage('left', 'blank')" class="p-1 hover:text-indigo-600 hover:bg-indigo-50 text-gray-400 rounded transition-colors" title="Insert Blank Page After Current"><i class="fa-regular fa-file-circle-plus text-sm"></i></button>
+                        <button onclick="insertPage('left', 'duplicate')" class="p-1 hover:text-indigo-600 hover:bg-indigo-50 text-gray-400 rounded transition-colors" title="Duplicate Current Page"><i class="fa-regular fa-clone text-sm"></i></button>
+                        <button onclick="deleteCurrentPage('left')" class="p-1 hover:text-red-600 hover:bg-red-50 text-gray-400 rounded transition-colors" title="Delete Current Page"><i class="fa-solid fa-trash-can text-sm"></i></button>
                     </div>
                 </div>
                 <div class="flex-1 overflow-auto relative flex justify-center p-4 bg-gray-500/10 pdf-canvas-container" id="left-viewport">
@@ -517,8 +376,7 @@
                 <div class="h-10 bg-white border-b border-gray-300 flex items-center justify-between px-4 shrink-0 z-10">
                     <div class="flex items-center gap-2">
                         <span class="text-sm font-bold text-gray-600 truncate w-24" id="right-view-title">None</span>
-                        <!-- Viewport Search -->
-                         <div class="relative group/search">
+                        <div class="relative group/search">
                             <input type="text" id="right-search-input" placeholder="Find..." class="hidden pl-6 pr-2 py-0.5 text-[10px] border border-gray-300 rounded w-24 focus:w-32 transition-all focus:outline-none focus:ring-1 focus:ring-blue-500">
                             <button id="right-search-toggle" onclick="toggleViewportSearch('right')" class="w-6 h-6 rounded hover:bg-gray-100 flex items-center justify-center text-gray-500 text-xs">
                                 <i class="fa-solid fa-magnifying-glass"></i>
@@ -533,34 +391,25 @@
                     </div>
                     
                     <div class="flex items-center gap-2">
-                         <!-- Zoom Controls -->
-                        <div class="flex items-center bg-gray-50 rounded border border-gray-200">
-                            <button onclick="zoomViewport('right', -0.25)" class="px-1.5 py-0.5 hover:bg-gray-200 rounded text-gray-600 text-xs" title="Zoom Out"><i class="fa-solid fa-minus"></i></button>
+                         <div class="flex items-center bg-gray-50 rounded border border-gray-200">
+                            <button onclick="zoomViewport('right', -0.25)" class="px-1.5 py-0.5 hover:bg-gray-200 rounded text-gray-600 text-xs"><i class="fa-solid fa-minus"></i></button>
                             <span id="right-zoom-level" class="text-[10px] w-8 text-center font-mono text-gray-500">100%</span>
-                            <button onclick="zoomViewport('right', 0.25)" class="px-1.5 py-0.5 hover:bg-gray-200 rounded text-gray-600 text-xs" title="Zoom In"><i class="fa-solid fa-plus"></i></button>
+                            <button onclick="zoomViewport('right', 0.25)" class="px-1.5 py-0.5 hover:bg-gray-200 rounded text-gray-600 text-xs"><i class="fa-solid fa-plus"></i></button>
                             <div class="w-px h-3 bg-gray-300 mx-0.5"></div>
                             <button onclick="resetZoom('right')" class="px-1.5 py-0.5 hover:bg-blue-100 text-blue-600 rounded text-xs" title="Fit Width"><i class="fa-solid fa-expand"></i></button>
                         </div>
 
                         <div class="w-px h-4 bg-gray-300 mx-1"></div>
 
-                        <!-- Navigation Controls -->
                         <button onclick="navigatePage('right', -1)" class="p-1 hover:bg-gray-100 rounded text-gray-600"><i class="fa-solid fa-chevron-left"></i></button>
                         <span id="right-page-indicator" class="text-xs text-gray-500 w-16 text-center">-- / --</span>
                         <button onclick="navigatePage('right', 1)" class="p-1 hover:bg-gray-100 rounded text-gray-600"><i class="fa-solid fa-chevron-right"></i></button>
                         
                         <div class="w-px h-4 bg-gray-300 mx-1"></div>
 
-                        <!-- Page Tools (Right) -->
-                        <button onclick="insertPage('right', 'blank')" class="p-1 hover:text-indigo-600 hover:bg-indigo-50 text-gray-400 rounded transition-colors" title="Insert Blank Page After Current">
-                            <i class="fa-regular fa-file-circle-plus text-sm"></i>
-                        </button>
-                        <button onclick="insertPage('right', 'duplicate')" class="p-1 hover:text-indigo-600 hover:bg-indigo-50 text-gray-400 rounded transition-colors" title="Duplicate Current Page">
-                            <i class="fa-regular fa-clone text-sm"></i>
-                        </button>
-                        <button onclick="deleteCurrentPage('right')" class="p-1 hover:text-red-600 hover:bg-red-50 text-gray-400 rounded transition-colors" title="Delete Current Page">
-                            <i class="fa-solid fa-trash-can text-sm"></i>
-                        </button>
+                        <button onclick="insertPage('right', 'blank')" class="p-1 hover:text-indigo-600 hover:bg-indigo-50 text-gray-400 rounded transition-colors" title="Insert Blank Page After Current"><i class="fa-regular fa-file-circle-plus text-sm"></i></button>
+                        <button onclick="insertPage('right', 'duplicate')" class="p-1 hover:text-indigo-600 hover:bg-indigo-50 text-gray-400 rounded transition-colors" title="Duplicate Current Page"><i class="fa-regular fa-clone text-sm"></i></button>
+                        <button onclick="deleteCurrentPage('right')" class="p-1 hover:text-red-600 hover:bg-red-50 text-gray-400 rounded transition-colors" title="Delete Current Page"><i class="fa-solid fa-trash-can text-sm"></i></button>
                     </div>
                 </div>
                 <div class="flex-1 overflow-auto relative flex justify-center p-4 bg-gray-500/10 pdf-canvas-container" id="right-viewport">
@@ -576,7 +425,41 @@
 
             <svg id="drawing-layer" class="absolute inset-0 w-full h-full z-40 overflow-visible pointer-events-none">
                 <path id="current-draw-path" d="" fill="none" stroke="#ef4444" stroke-width="2" stroke-dasharray="5,5" style="display:none;"></path>
+                <div id="text-creation-rect" style="display:none; position:absolute; border: 1px dashed #3b82f6; background: rgba(59, 130, 246, 0.1); pointer-events:none;"></div>
             </svg>
+
+            <!-- NEW: AI Sidebar -->
+            <aside id="ai-sidebar" class="bg-white border-l border-gray-200 flex flex-col shrink-0 z-20">
+                <!-- Header -->
+                <div class="h-12 border-b border-gray-200 flex items-center justify-between px-4 bg-gray-50">
+                    <div class="flex items-center gap-2">
+                        <i class="fa-solid fa-robot text-blue-600"></i>
+                        <span class="text-sm font-bold text-gray-700">AI Assistant</span>
+                    </div>
+                    <button id="toggle-ai-sidebar" class="text-gray-400 hover:text-gray-600">
+                        <i class="fa-solid fa-chevron-right"></i>
+                    </button>
+                </div>
+
+                <!-- Chat Area -->
+                <div id="chat-history" class="p-4 space-y-4 bg-white overflow-y-auto">
+                    <div class="text-center text-xs text-gray-400 mt-4">
+                        Ask a question about the loaded PDFs.
+                        <br>Uses <span class="font-mono">nomic-embed-text</span> & <span class="font-mono">llama3.2</span>.
+                    </div>
+                </div>
+
+                <!-- Input Area -->
+                <div class="p-3 border-t border-gray-200 bg-gray-50">
+                    <div class="relative">
+                        <textarea id="chat-input" rows="2" class="w-full p-2 pr-10 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none resize-none" placeholder="Ask about this document..."></textarea>
+                        <button id="send-chat-btn" class="absolute bottom-2 right-2 p-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors">
+                            <i class="fa-solid fa-paper-plane text-xs"></i>
+                        </button>
+                    </div>
+                    <div id="ai-status" class="text-[10px] text-gray-500 mt-1 h-4"></div>
+                </div>
+            </aside>
 
         </main>
     </div>
@@ -602,7 +485,7 @@
         }
 
         const DB_NAME = 'PDFLinkerStudioDB';
-        const DB_VERSION = 10; 
+        const DB_VERSION = 15; // Updated Version for Embeddings Storage
         let db;
 
         async function initDB() {
@@ -704,7 +587,8 @@
                 startPoint: { x: 0, y: 0 }, 
                 startPointData: null, 
                 currentPoint: { x: 0, y: 0 },
-                pointerId: null 
+                pointerId: null,
+                activeTextBox: null 
             },
             selection: {
                 active: false,
@@ -713,6 +597,7 @@
                 marqueeStart: null,
                 marqueeCurrent: null,
                 selectedImages: [],
+                selectedTextBoxes: [],
                 selectedStrokes: [],
                 boundingBox: null,
                 dragStartMouse: null,
@@ -724,8 +609,11 @@
                 left: { query: '', results: [], index: -1, abortController: null },
                 right: { query: '', results: [], index: -1, abortController: null }
             },
-            // Reusable canvas for text measurement (performance)
-            measureCanvas: document.createElement('canvas')
+            measureCanvas: document.createElement('canvas'),
+            // --- NEW: AI State ---
+            embeddings: [],
+            isIndexing: false,
+            currentContextChunks: [] // Stores chunks used in the last response for citations
         };
 
         const els = {
@@ -752,6 +640,7 @@
             rightSearchLayer: document.getElementById('right-search-layer'),
             drawingLayer: document.getElementById('drawing-layer'),
             currentPath: document.getElementById('current-draw-path'),
+            textCreationRect: document.getElementById('text-creation-rect'),
             modeNavBtn: document.getElementById('mode-nav-btn'),
             modeLinkBtn: document.getElementById('mode-link-btn'),
             modeDelLinkBtn: document.getElementById('mode-del-link-btn'),
@@ -759,6 +648,7 @@
             annoTools: document.getElementById('anno-tools'),
             toolSelect: document.getElementById('tool-select'),
             toolPen: document.getElementById('tool-pen'),
+            toolText: document.getElementById('tool-text'),
             toolEraserPixel: document.getElementById('tool-eraser-pixel'),
             toolEraserStroke: document.getElementById('tool-eraser-stroke'),
             colorPicker: document.getElementById('color-picker'),
@@ -775,7 +665,268 @@
             rightZoomLevel: document.getElementById('right-zoom-level'),
             globalSearchInput: document.getElementById('global-search-input'),
             globalSearchResults: document.getElementById('global-search-results'),
+            // NEW: AI Elements
+            chatHistory: document.getElementById('chat-history'),
+            chatInput: document.getElementById('chat-input'),
+            sendChatBtn: document.getElementById('send-chat-btn'),
+            aiStatus: document.getElementById('ai-status'),
+            toggleAiSidebar: document.getElementById('toggle-ai-sidebar')
         };
+
+        // --- NEW: AI Helper Functions ---
+        
+        function cosineSimilarity(vecA, vecB) {
+            let dotProduct = 0;
+            let normA = 0;
+            let normB = 0;
+            for (let i = 0; i < vecA.length; i++) {
+                dotProduct += vecA[i] * vecB[i];
+                normA += vecA[i] * vecA[i];
+                normB += vecB[i] * vecB[i];
+            }
+            if (normA === 0 || normB === 0) return 0;
+            return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+        }
+
+        async function getEmbedding(text) {
+            try {
+                const response = await fetch('http://localhost:11434/api/embeddings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: "nomic-embed-text:latest",
+                        prompt: text
+                    })
+                });
+                const data = await response.json();
+                return data.embedding;
+            } catch (error) {
+                console.error("Embedding Error:", error);
+                return null;
+            }
+        }
+
+        async function generateLLMResponse(prompt) {
+            try {
+                const response = await fetch('http://localhost:11434/api/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: "llama3.2:3b",
+                        prompt: prompt,
+                        stream: false
+                    })
+                });
+                const data = await response.json();
+                return data.response;
+            } catch (error) {
+                console.error("LLM Error:", error);
+                return "Error connecting to LLM.";
+            }
+        }
+
+        async function indexDocuments(force = false) {
+            if (state.isIndexing) return;
+            
+            // Check if we already have embeddings for current docs
+            const docIds = Object.keys(state.documents);
+            const embeddedDocIds = new Set(state.embeddings.map(e => e.docId));
+            const needsIndexing = force || docIds.some(id => !embeddedDocIds.has(id));
+
+            if (!needsIndexing) {
+                updateAIStatus(`Ready. Indexed ${state.embeddings.length} segments.`);
+                return;
+            }
+
+            state.isIndexing = true;
+            updateAIStatus("Indexing PDFs...");
+            
+            const chunkSize = 500;
+            const overlap = 50;
+
+            for (const docId of docIds) {
+                if (embeddedDocIds.has(docId) && !force) continue; // Skip if already indexed
+
+                const doc = state.documents[docId];
+                const totalPages = Math.min(doc.pageCount, 50); 
+
+                for (let i = 1; i <= totalPages; i++) {
+                    try {
+                        const page = await doc.pdfDoc.getPage(i);
+                        const textContent = await page.getTextContent();
+                        const pageText = textContent.items.map(item => item.str).join(' ').trim();
+                        
+                        if(pageText.length < 10) continue;
+
+                        for (let start = 0; start < pageText.length; start += (chunkSize - overlap)) {
+                            const chunk = pageText.substring(start, start + chunkSize);
+                            if (chunk.trim().length > 10) {
+                                const vector = await getEmbedding(chunk);
+                                if (vector) {
+                                    state.embeddings.push({
+                                        id: `chunk_${docId}_${i}_${start}`,
+                                        text: chunk,
+                                        vector: vector,
+                                        docId: docId,
+                                        docName: doc.name,
+                                        pageNum: i
+                                    });
+                                }
+                            }
+                        }
+                    } catch (e) { console.error("Error indexing page", i, e); }
+                }
+            }
+            
+            state.isIndexing = false;
+            updateAIStatus(`Ready. Indexed ${state.embeddings.length} segments.`);
+        }
+
+        function updateAIStatus(msg) {
+            els.aiStatus.innerText = msg;
+        }
+
+        function appendMessage(role, htmlContent) {
+            const msgDiv = document.createElement('div');
+            msgDiv.className = `ai-message ${role}`;
+            msgDiv.innerHTML = `<div class="ai-bubble">${htmlContent}</div>`;
+            els.chatHistory.appendChild(msgDiv);
+            els.chatHistory.scrollTop = els.chatHistory.scrollHeight;
+        }
+
+        // NEW: Highlighting Logic for Citations
+        async function highlightChunk(text, side) {
+            const layer = document.getElementById(`${side}-search-layer`);
+            layer.innerHTML = ''; // Clear previous
+
+            const viewState = state.view[side];
+            const docId = viewState.docId;
+            if (!docId || !state.documents[docId]) return;
+
+            try {
+                const page = await state.documents[docId].pdfDoc.getPage(viewState.pageNum);
+                const textContent = await page.getTextContent();
+                const viewport = page.getViewport({ scale: viewState.scale });
+                
+                // Use the measure canvas context from state for accurate text measurement
+                const measureCtx = state.measureCanvas.getContext('2d');
+
+                // Search for the text chunk (first 100 chars should be unique enough for context)
+                const searchTerm = text.substring(0, 100).trim();
+
+                // Logic similar to performViewportSearch but specific for this text
+                let found = false;
+                for (let itemIdx = 0; itemIdx < textContent.items.length; itemIdx++) {
+                    const item = textContent.items[itemIdx];
+                    if (item.str.includes(searchTerm)) {
+                        const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+                        const left = tx[4];
+                        const bottom = tx[5];
+                        const fontSize = Math.sqrt((tx[0] * tx[0]) + (tx[1] * tx[1]));
+                        const top = bottom - fontSize;
+                        
+                        const cssFontFamily = getCssFontFamily(item.fontName);
+                        measureCtx.font = `${fontSize}px ${cssFontFamily}`;
+                        
+                        // Measure width of the specific matching text
+                        const matchWidth = measureCtx.measureText(searchTerm).width;
+
+                        const div = document.createElement('div');
+                        div.className = 'citation-highlight'; // Special style for citation
+                        div.style.left = `${left}px`;
+                        div.style.top = `${top}px`;
+                        div.style.width = `${matchWidth}px`;
+                        div.style.height = `${fontSize}px`;
+                        layer.appendChild(div);
+                        found = true;
+                        break; // Highlight first occurrence
+                    }
+                }
+            } catch (e) {
+                console.error("Error highlighting chunk", e);
+            }
+        }
+
+        // Global function for Citation Links
+        window.jumpToCitation = function(index) {
+            const chunk = state.currentContextChunks[index];
+            if (!chunk) return;
+
+            // 1. Open doc in Right Viewport
+            state.view.right.docId = chunk.docId;
+            state.view.right.pageNum = chunk.pageNum;
+            
+            // 2. Render Page
+            renderPage('right');
+
+            // 3. Highlight the specific chunk
+            // We delay slightly to ensure render is complete and coordinates are calculated
+            setTimeout(() => {
+                highlightChunk(chunk.text, 'right');
+            }, 100);
+        };
+
+        async function handleChat() {
+            const question = els.chatInput.value.trim();
+            if (!question) return;
+
+            appendMessage('user', question);
+            els.chatInput.value = '';
+            updateAIStatus("Thinking...");
+
+            // 1. Embed Question
+            const questionVector = await getEmbedding(question);
+            if (!questionVector) {
+                appendMessage('assistant', "Failed to generate embedding for question.");
+                updateAIStatus("Error");
+                return;
+            }
+
+            // 2. Retrieve Top-K (3) Contexts
+            const scoredEmbeddings = state.embeddings.map(emb => {
+                return { ...emb, score: cosineSimilarity(questionVector, emb.vector) };
+            }).sort((a, b) => b.score - a.score).slice(0, 3); // Top 3
+
+            // Store for later clicking
+            state.currentContextChunks = scoredEmbeddings;
+
+            // 3. Construct Prompt with Numbered Sources
+            const contextText = scoredEmbeddings.map((emb, idx) => 
+                `[${idx + 1}] Source: ${emb.docName} (Page ${emb.pageNum})\nText: ${emb.text}`
+            ).join("\n---\n");
+
+            const systemPrompt = `You are a helpful assistant answering questions based on the provided PDF context.
+            Use the context below to answer the user's question.
+            If the answer is not in the context, say "I don't know based on the provided documents."
+            IMPORTANT: When referencing information from the numbered sources, cite them using the format [1], [2], etc.`;
+
+            const fullPrompt = `${systemPrompt}\n\nContext:\n${contextText}\n\nUser Question: ${question}\n\nAnswer:`;
+
+            // 4. Generate Answer
+            const answer = await generateLLMResponse(fullPrompt);
+
+            // 5. Parse and Format Response with Links
+            // Convert [1], [2] etc to clickable spans
+            const formattedAnswer = answer.replace(/\[(\d+)\]/g, (match, num) => {
+                return `<span class="citation-chip" onclick="jumpToCitation(${parseInt(num)-1})">${num}</span>`;
+            });
+
+            let contentHtml = formattedAnswer;
+
+            // Add source buttons explicitly at the bottom for clarity
+            contentHtml += `<div class="mt-2 pt-2 border-t border-gray-200 flex flex-wrap gap-1">`;
+            scoredEmbeddings.forEach((emb, idx) => {
+                contentHtml += `<span class="text-[10px] bg-blue-50 text-blue-600 border border-blue-200 px-2 py-1 rounded cursor-pointer hover:bg-blue-100" onclick="jumpToCitation(${idx})">
+                    [${idx+1}] ${emb.docName} P${emb.pageNum}
+                </span>`;
+            });
+            contentHtml += `</div>`;
+
+            appendMessage('assistant', contentHtml);
+            updateAIStatus("Ready");
+        }
+
+        // --- End AI Helpers ---
 
         const handleScroll = debounce((side) => {
             const viewport = els[side + 'Viewport'];
@@ -785,7 +936,6 @@
             renderMarkersForView(side);
         }, 200);
 
-        // --- Resizer Logic ---
         function initResizer() {
             const resizer = els.resizer;
             const leftSide = els.leftPanel;
@@ -825,15 +975,16 @@
                 saveSettings();
                 renderMarkersForView('left');
                 renderMarkersForView('right');
+                ['left', 'right'].forEach(s => renderTextLayer(s));
             };
 
             resizer.addEventListener('pointerdown', mouseDownHandler);
         }
 
-        // --- Zoom Logic ---
         function updateZoomIndicator(side) {
             const percentage = Math.round(state.view[side].scale * 100);
             els[side + 'ZoomLevel'].innerText = percentage + '%';
+            renderTextLayer(side);
         }
 
         function zoomViewport(side, delta) {
@@ -854,7 +1005,6 @@
             saveSettings();
         }
 
-        // --- Text Layer Logic ---
         function renderTextLayerCustom(textContent, textLayerDiv, viewport) {
             textLayerDiv.innerHTML = '';
             const textItems = textContent.items;
@@ -876,7 +1026,6 @@
             }
         }
 
-        // --- Helper: Map PDF Font Name to CSS Font Family ---
         function getCssFontFamily(pdfFontName) {
             if (!pdfFontName) return 'sans-serif';
             const n = pdfFontName.toLowerCase();
@@ -886,8 +1035,6 @@
             return 'sans-serif'; 
         }
 
-        // --- Search Logic (Precise Highlighting using measureText) ---
-        
         function toggleViewportSearch(side) {
             const input = document.getElementById(`${side}-search-input`);
             const nav = document.getElementById(`${side}-search-nav`);
@@ -984,7 +1131,7 @@
                             }
                         }
                     }
-                } catch (e) { /* ignore page errors */ }
+                } catch (e) { }
             }
 
             state.search[side].results = allMatches;
@@ -1064,7 +1211,6 @@
             updateSearchCount(side);
         }
 
-        // Global Search
         async function performGlobalSearch() {
             const query = els.globalSearchInput.value.trim().toLowerCase();
             const container = els.globalSearchResults;
@@ -1096,7 +1242,7 @@
                                 page: i
                             });
                         }
-                    } catch(e) { /* ignore */ }
+                    } catch(e) { }
                 }
             }
 
@@ -1133,22 +1279,25 @@
             });
         }
 
-        // --- Feature: Delete Document & Rename ---
         async function deleteDocument(id) {
             if(!confirm("Are you sure you want to delete this PDF and all its annotations/links?")) return;
 
             delete state.documents[id];
             delete state.annotations[id];
 
-            const initialLinkCount = state.links.length;
-            state.links = state.links.filter(l => l.source.docId !== id && l.target.docId !== id);
+            const updatedLinks = state.links.filter(l => l.source.docId !== id && l.target.docId !== id);
             
             const tx = db.transaction(['documents', 'links', 'annotations'], 'readwrite');
             tx.objectStore('documents').delete(id);
             tx.objectStore('annotations').delete(id);
+            
             const linkStore = tx.objectStore('links');
             linkStore.clear();
-            state.links.forEach(l => linkStore.put(l));
+            updatedLinks.forEach(l => linkStore.put(l));
+            state.links = updatedLinks;
+
+            // Also remove embeddings for this doc
+            state.embeddings = state.embeddings.filter(e => e.docId !== id);
 
             if(state.view.left.docId === id) {
                 state.view.left.docId = null;
@@ -1180,11 +1329,8 @@
             input.onblur = doSave;
             
             input.onkeydown = (e) => {
-                if(e.key === 'Enter') {
-                    input.blur(); 
-                } else if (e.key === 'Escape') {
-                    renderDocList(); 
-                }
+                if(e.key === 'Enter') { input.blur(); } 
+                else if (e.key === 'Escape') { renderDocList(); }
             };
 
             el.replaceWith(input);
@@ -1192,16 +1338,12 @@
         }
 
         async function saveRename(id, newName) {
-            if(!newName.trim()) {
-                renderDocList(); 
-                return;
-            }
+            if(!newName.trim()) { renderDocList(); return; }
             state.documents[id].name = newName;
             await saveDocumentToDB(state.documents[id]);
             renderDocList();
         }
 
-        // --- Feature: Delete Link (Mode Based) ---
         async function deleteLink(linkId) {
             const idx = state.links.findIndex(l => l.id === linkId);
             if(idx !== -1) {
@@ -1212,7 +1354,6 @@
             }
         }
 
-        // --- Feature: Delete Page ---
         async function deleteCurrentPage(side) {
             const viewState = state.view[side];
             const docId = viewState.docId;
@@ -1228,7 +1369,7 @@
             try {
                 const originalDoc = state.documents[docId];
                 if (originalDoc.pageCount <= 1) {
-                    showModal("Error", "Cannot delete the only page in a document.");
+                    showModal("Error", "Cannot delete only page in a document.");
                     return;
                 }
 
@@ -1240,7 +1381,6 @@
                 const newPdfBytes = await pdfLibDoc.save();
                 const newBlob = new Blob([newPdfBytes], { type: 'application/pdf' });
 
-                // 1. Update Annotations (Shift Down)
                 if (state.annotations[docId]) {
                     const newAnnoMap = {};
                     for(let i=1; i<pageNum; i++) {
@@ -1253,24 +1393,25 @@
                     await saveAnnotationsToDB(docId, state.annotations[docId]);
                 }
 
-                // 2. Update Links
+                // Also shift embeddings
+                state.embeddings.forEach(e => {
+                    if (e.docId === docId && e.pageNum > pageNum) {
+                        e.pageNum -= 1;
+                    }
+                });
+
                 const updatedLinks = [];
                 for (const link of state.links) {
                     let keepLink = true;
                     const updatePoint = (pt) => {
                         if (pt.docId === docId) {
-                            if (pt.page === pageNum) {
-                                keepLink = false; 
-                            } else if (pt.page > pageNum) {
-                                return { ...pt, page: pt.page - 1 };
-                            }
+                            if (pt.page === pageNum) keepLink = false; 
+                            else if (pt.page > pageNum) return { ...pt, page: pt.page - 1 };
                         }
                         return pt;
                     };
-
                     const newSource = updatePoint(link.source);
                     const newTarget = updatePoint(link.target);
-
                     if(keepLink) {
                         updatedLinks.push({ ...link, source: newSource, target: newTarget });
                         await saveLinkToDB(updatedLinks[updatedLinks.length-1]);
@@ -1283,7 +1424,6 @@
                 updatedLinks.forEach(l => linkStore.put(l));
                 state.links = updatedLinks;
 
-                // 3. Reload Document
                 const newPdfJsDoc = await pdfjsLib.getDocument(newPdfBytes).promise;
 
                 state.documents[docId].file = newBlob;
@@ -1322,7 +1462,6 @@
             }
         }
 
-        // --- Feature: Delete Selection ---
         function deleteSelection() {
             if (!state.selection.active) return;
             const side = state.selection.side;
@@ -1340,6 +1479,13 @@
                 }
             });
 
+            state.selection.selectedTextBoxes.forEach(textBoxObj => {
+                const idx = pageData.textBoxes.indexOf(textBoxObj);
+                if(idx > -1) {
+                    pageData.textBoxes.splice(idx, 1);
+                }
+            });
+
             state.selection.selectedStrokes.forEach(strokeObj => {
                 const idx = pageData.strokes.indexOf(strokeObj);
                 if(idx > -1) pageData.strokes.splice(idx, 1);
@@ -1348,8 +1494,89 @@
             clearSelection();
             saveAnnotationsToDB(docId, state.annotations[docId]);
             renderAnnotations(side);
+            renderTextLayer(side);
         }
 
+        function renderTextLayer(side) {
+            const wrapper = els[side + 'Wrapper'];
+            const existingBoxes = wrapper.querySelectorAll('.text-box');
+            existingBoxes.forEach(el => el.remove());
+
+            const viewState = state.view[side];
+            const docId = viewState.docId;
+            const pageNum = viewState.pageNum;
+            const scale = viewState.scale;
+
+            if (!state.annotations[docId] || !state.annotations[docId][pageNum]) return;
+
+            const boxes = state.annotations[docId][pageNum].textBoxes || [];
+
+            boxes.forEach(box => {
+                const div = document.createElement('div');
+                div.className = 'text-box';
+                if (state.selection.selectedTextBoxes.includes(box)) {
+                    div.classList.add('selected');
+                }
+                
+                div.contentEditable = true;
+                div.innerText = box.content;
+                div.dataset.id = box.id;
+                
+                div.style.left = (box.x * 100) + '%';
+                div.style.top = (box.y * 100) + '%';
+                div.style.width = (box.w * 100) + '%';
+                div.style.height = (box.h * 100) + '%'; 
+                
+                div.style.color = box.color;
+                div.style.fontSize = (box.fontSize * scale) + 'px';
+
+                div.addEventListener('input', (e) => {
+                    box.content = div.innerText;
+                    if (div.scrollHeight > div.clientHeight) {
+                        const wrapperHeight = els[side + 'Wrapper'].offsetHeight;
+                        const newPixelHeight = div.scrollHeight;
+                        box.h = newPixelHeight / wrapperHeight;
+                        div.style.height = newPixelHeight + 'px';
+                        debouncedSaveToDB(side); 
+                    } else {
+                        debouncedSaveToDB(side);
+                    }
+                });
+
+                div.addEventListener('focus', () => {
+                    if (state.appMode === 'annotation' && state.annoTool === 'text') {}
+                    else if (state.appMode === 'annotation' && state.annoTool === 'select') {}
+                });
+
+                div.addEventListener('blur', () => {
+                    if (!box.content.trim()) {
+                        const pageData = state.annotations[docId][pageNum];
+                        const idx = pageData.textBoxes.indexOf(box);
+                        if (idx > -1) {
+                            pageData.textBoxes.splice(idx, 1);
+                            saveAnnotationsToDB(docId, state.annotations[docId]);
+                            div.remove();
+                            if (state.selection.selectedTextBoxes.includes(box)) {
+                                state.selection.selectedTextBoxes = state.selection.selectedTextBoxes.filter(b => b.id !== box.id);
+                            }
+                        }
+                    } else {
+                        debouncedSaveToDB(side);
+                    }
+                });
+
+                wrapper.appendChild(div);
+            });
+        }
+        
+        const dbSaveDebounceMap = { left: null, right: null };
+        function debouncedSaveToDB(side) {
+            if (dbSaveDebounceMap[side]) clearTimeout(dbSaveDebounceMap[side]);
+            dbSaveDebounceMap[side] = setTimeout(() => {
+                const docId = state.view[side].docId;
+                if(docId) saveAnnotationsToDB(docId, state.annotations[docId]);
+            }, 500);
+        }
 
         async function init() {
             try {
@@ -1372,6 +1599,7 @@
                                     state.imageCache[img.id] = imageObj;
                                 });
                             }
+                            if(!pageData.textBoxes) pageData.textBoxes = [];
                         });
                     });
 
@@ -1387,9 +1615,7 @@
                                 pageCount: pdfDoc.numPages,
                                 thumbnail: dbDoc.thumbnail
                             };
-                        } catch (err) {
-                            console.error("Failed to restore doc:", dbDoc.name, err);
-                        }
+                        } catch (err) { console.error("Failed to restore doc:", dbDoc.name, err); }
                     }
 
                     if (savedData.settings) {
@@ -1462,6 +1688,18 @@
                 saveSettings();
             });
 
+            // AI Event Listeners
+            els.sendChatBtn.addEventListener('click', handleChat);
+            els.chatInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleChat();
+                }
+            });
+            els.toggleAiSidebar.addEventListener('click', () => {
+                document.body.classList.toggle('ai-sidebar-collapsed');
+            });
+
             initResizer();
         }
 
@@ -1469,7 +1707,7 @@
             state.appMode = mode;
             if (save) saveSettings();
 
-            document.body.classList.remove('linking-mode', 'annotation-mode', 'anno-pen', 'anno-pixel-eraser', 'anno-stroke-eraser', 'anno-select', 'delete-link-mode');
+            document.body.classList.remove('linking-mode', 'annotation-mode', 'anno-pen', 'anno-pixel-eraser', 'anno-stroke-eraser', 'anno-select', 'anno-text', 'delete-link-mode');
 
             [els.modeNavBtn, els.modeLinkBtn, els.modeDelLinkBtn, els.modeAnnoBtn].forEach(btn => {
                 btn.classList.remove('bg-white', 'shadow-sm', 'text-gray-800');
@@ -1484,7 +1722,6 @@
                 document.body.classList.add('linking-mode');
                 els.modeLinkBtn.classList.add('bg-white', 'shadow-sm', 'text-gray-800');
                 els.modeLinkBtn.classList.remove('text-gray-500');
-                // showModal("Link Mode", "Click and drag from one document to another to create a link.");
             } else if (mode === 'delete-link') {
                 document.body.classList.add('delete-link-mode');
                 els.modeDelLinkBtn.classList.add('bg-white', 'shadow-sm', 'text-gray-800');
@@ -1503,11 +1740,11 @@
             state.annoTool = tool;
             if (save) saveSettings();
 
-            [els.toolSelect, els.toolPen, els.toolEraserPixel, els.toolEraserStroke].forEach(btn => {
+            [els.toolSelect, els.toolPen, els.toolText, els.toolEraserPixel, els.toolEraserStroke].forEach(btn => {
                 btn.classList.remove('bg-blue-50', 'text-blue-600', 'bg-purple-50', 'text-purple-600');
                 btn.classList.add('text-gray-500');
             });
-            document.body.classList.remove('anno-pen', 'anno-pixel-eraser', 'anno-stroke-eraser', 'anno-select');
+            document.body.classList.remove('anno-pen', 'anno-pixel-eraser', 'anno-stroke-eraser', 'anno-select', 'anno-text');
 
             if (tool === 'select') {
                 els.toolSelect.classList.add('bg-purple-50', 'text-purple-600');
@@ -1517,6 +1754,10 @@
                 els.toolPen.classList.add('bg-blue-50', 'text-blue-600');
                 els.toolPen.classList.remove('text-gray-500');
                 document.body.classList.add('anno-pen');
+            } else if (tool === 'text') {
+                els.toolText.classList.add('bg-blue-50', 'text-blue-600');
+                els.toolText.classList.remove('text-gray-500');
+                document.body.classList.add('anno-text');
             } else if (tool === 'eraser-pixel') {
                 els.toolEraserPixel.classList.add('bg-blue-50', 'text-blue-600');
                 els.toolEraserPixel.classList.remove('text-gray-500');
@@ -1535,6 +1776,7 @@
                 state.links = [];
                 state.annotations = {};
                 state.imageCache = {};
+                state.embeddings = [];
                 state.view.left = { docId: null, pageNum: 1, scale: 1.5, scrollTop: 0 };
                 state.view.right = { docId: null, pageNum: 1, scale: 1.5, scrollTop: 0 };
                 state.lastActiveSide = 'left';
@@ -1576,11 +1818,14 @@
                     showModal("Error", `Could not load ${file.name}`);
                 }
             }
+            
+            // --- TRIGGER INDEXING AFTER UPLOAD ---
+            indexDocuments();
+            // --------------------------------------
+
             renderDocList();
             els.uploadInput.value = ''; 
         }
-
-        // --- Image Handling ---
 
         async function handleImageUpload(e) {
             const file = e.target.files[0];
@@ -1640,7 +1885,7 @@
                     const docId = state.view[side].docId;
                     const pageNum = state.view[side].pageNum;
                     if (!state.annotations[docId]) state.annotations[docId] = {};
-                    if (!state.annotations[docId][pageNum]) state.annotations[docId][pageNum] = { strokes: [], images: [] };
+                    if (!state.annotations[docId][pageNum]) state.annotations[docId][pageNum] = { strokes: [], images: [], textBoxes: [] };
                     
                     state.annotations[docId][pageNum].images.push(newImage);
                     state.imageCache[id] = imgObj;
@@ -1651,6 +1896,7 @@
                         side: side,
                         mode: 'idle',
                         selectedImages: [newImage],
+                        selectedTextBoxes: [],
                         selectedStrokes: [],
                         boundingBox: { x: newImage.x, y: newImage.y, w: newImage.w, h: newImage.h }
                     };
@@ -1748,6 +1994,7 @@
                 els[side + 'Title'].innerText = 'None';
                 els[side + 'PageInd'].innerText = '-- / --';
                 document.getElementById(side + '-markers-layer').innerHTML = '';
+                els[side + 'Wrapper'].querySelectorAll('.text-box').forEach(e => e.remove());
                 return;
             }
 
@@ -1782,7 +2029,8 @@
                 if (viewState.scrollTop) viewportEl.scrollTop = viewState.scrollTop;
 
                 renderMarkersForView(side);
-                renderAnnotations(side); 
+                renderAnnotations(side);
+                renderTextLayer(side);
             } catch (err) {
                 console.error("Error rendering page:", err);
             }
@@ -1803,8 +2051,6 @@
             }
         }
 
-        // --- Selection & Group Logic ---
-
         function clearSelection() {
             state.selection = {
                 active: false,
@@ -1813,9 +2059,14 @@
                 marqueeStart: null,
                 marqueeCurrent: null,
                 selectedImages: [],
+                selectedTextBoxes: [],
                 selectedStrokes: [],
                 boundingBox: null
             };
+            ['left', 'right'].forEach(side => {
+                const wrapper = els[side + 'Wrapper'];
+                wrapper.querySelectorAll('.selected').forEach(el => el.classList.remove('selected'));
+            });
         }
 
         function getStrokeBounds(stroke) {
@@ -1837,8 +2088,6 @@
                      r2.y + r2.h < r1.y);
         }
 
-        // --- Annotation & Image Rendering Logic ---
-
         function renderAnnotations(side) {
             const viewState = state.view[side];
             const canvas = els[side + 'AnnoCanvas'];
@@ -1848,9 +2097,8 @@
 
             ctx.clearRect(0, 0, width, height);
 
-            const pageData = (state.annotations[viewState.docId] && state.annotations[viewState.docId][viewState.pageNum]) || { strokes: [], images: [] };
+            const pageData = (state.annotations[viewState.docId] && state.annotations[viewState.docId][viewState.pageNum]) || { strokes: [], images: [], textBoxes: [] };
             
-            // 1. Draw Images
             pageData.images.forEach(img => {
                 const imgObj = state.imageCache[img.id];
                 if (imgObj) {
@@ -1858,7 +2106,6 @@
                 }
             });
 
-            // 2. Draw Strokes
             pageData.strokes.forEach(stroke => {
                 ctx.beginPath();
                 ctx.lineCap = 'round';
@@ -1885,7 +2132,6 @@
             });
             ctx.globalCompositeOperation = 'source-over';
 
-            // 3. Draw Marquee Selection (Dotted Blue Line)
             if (state.selection.active && state.selection.side === side && state.selection.mode === 'marquee') {
                 const start = state.selection.marqueeStart;
                 const curr = state.selection.marqueeCurrent;
@@ -1903,7 +2149,6 @@
                 ctx.setLineDash([]);
             }
 
-            // 4. Draw Group Selection Bounding Box
             if (state.selection.active && state.selection.side === side && (state.selection.mode === 'idle' || state.selection.mode === 'dragging' || state.selection.mode === 'resizing')) {
                 const bbox = state.selection.boundingBox;
                 if (bbox) {
@@ -1928,7 +2173,7 @@
             const pageNum = state.view[side].pageNum;
             
             if (!state.annotations[docId]) state.annotations[docId] = {};
-            if (!state.annotations[docId][pageNum]) state.annotations[docId][pageNum] = { strokes: [], images: [] };
+            if (!state.annotations[docId][pageNum]) state.annotations[docId][pageNum] = { strokes: [], images: [], textBoxes: [] };
 
             const normalizedSize = state.annoThickness / 1000; 
 
@@ -2001,8 +2246,6 @@
             saveAnnotationsToDB(docId, state.annotations[docId]);
         }
 
-        // --- Stroke Eraser Logic ---
-
         function distToSegmentSquared(p, v, w) {
             const l2 = (v.x - w.x)**2 + (v.y - w.y)**2;
             if (l2 === 0) return (p.x - v.x)**2 + (p.y - v.y)**2;
@@ -2048,7 +2291,7 @@
 
         function handleKeyDown(e) {
             if ((e.key === 'Delete' || e.key === 'Backspace') && state.selection.active) {
-                if(e.target.tagName !== 'INPUT') {
+                if(e.target.tagName !== 'INPUT' && !e.target.isContentEditable) {
                     e.preventDefault();
                     deleteSelection();
                 }
@@ -2084,20 +2327,19 @@
         }
 
         function clearCurrentPageAnnotations() {
-            if(!confirm("Clear all annotations and images on the current page(s)?")) return;
+            if(!confirm("Clear all annotations and images on current page(s)?")) return;
 
             const clearView = (side, dId, pNum) => {
                 if (dId && state.annotations[dId]) {
-                    state.annotations[dId][pNum] = { strokes: [], images: [] };
+                    state.annotations[dId][pNum] = { strokes: [], images: [], textBoxes: [] };
                     saveAnnotationsToDB(dId, state.annotations[dId]);
                     renderAnnotations(side);
+                    renderTextLayer(side);
                 }
             };
             clearView('left', state.view.left.docId, state.view.left.pageNum);
             clearView('right', state.view.right.docId, state.view.right.pageNum);
         }
-
-        // --- PDF Manipulation ---
 
         async function insertPage(side, type) {
             const docId = state.view[side].docId;
@@ -2140,6 +2382,13 @@
                     state.annotations[docId] = newAnnoMap;
                     await saveAnnotationsToDB(docId, state.annotations[docId]);
                 }
+
+                // Shift embeddings
+                state.embeddings.forEach(e => {
+                    if (e.docId === docId && e.pageNum > insertIndex) {
+                        e.pageNum += 1;
+                    }
+                });
 
                 const updatedLinks = [];
                 for (const link of state.links) {
@@ -2187,8 +2436,6 @@
             }
         }
 
-        // --- Project Save/Load ---
-
         async function exportProject() {
             const docKeys = Object.keys(state.documents);
             if (docKeys.length === 0) {
@@ -2203,7 +2450,7 @@
                 const zip = new JSZip();
 
                 const metadata = {
-                    version: "2.7", 
+                    version: "2.20", // Version for Embeddings
                     timestamp: Date.now(),
                     links: state.links,
                     annotations: state.annotations,
@@ -2216,7 +2463,8 @@
                         annoColor: state.annoColor,
                         annoThickness: state.annoThickness
                     },
-                    documents: {} 
+                    documents: {},
+                    embeddings: state.embeddings // NEW: Save embeddings
                 };
 
                 for (const id of docKeys) {
@@ -2262,7 +2510,7 @@
                     await writable.write(content);
                     await writable.close();
                     state.projectFileHandle = handle;
-                    showModal("Saved", "Project saved successfully!");
+                    showModal("Saved", "Project saved successfully with embeddings!");
                 } catch (writeErr) {
                     console.error(writeErr);
                     throw new Error("Write failed");
@@ -2321,9 +2569,9 @@
 
                     if (metadata.annotations) {
                         state.annotations = metadata.annotations;
-                        state.imageCache = {}; 
                         Object.values(state.annotations).forEach(pages => {
                             Object.values(pages).forEach(pageData => {
+                                if(!pageData.textBoxes) pageData.textBoxes = [];
                                 if(pageData.images) {
                                     pageData.images.forEach(img => {
                                         const imageObj = new Image();
@@ -2343,6 +2591,12 @@
                         for (const link of state.links) {
                             await saveLinkToDB(link);
                         }
+                    }
+
+                    // NEW: Load Embeddings
+                    if (metadata.embeddings) {
+                        state.embeddings = metadata.embeddings || [];
+                        console.log("Loaded embeddings:", state.embeddings.length);
                     }
 
                     if (metadata.splitRatio) {
@@ -2368,7 +2622,7 @@
                     state.projectFileHandle = null;
                     showModal("Import Success", "Project loaded from ZIP.");
                 } else {
-                    showModal("Import Error", "Please use the ZIP export format.");
+                    showModal("Import Error", "Please use ZIP export format.");
                 }
 
                 if (isZip) {
@@ -2377,6 +2631,12 @@
                     updateZoomIndicator('right');
                     if (state.view.left.docId) renderPage('left');
                     if (state.view.right.docId) renderPage('right');
+                    
+                    // Trigger indexing for any NEW docs that might not be in the loaded embeddings
+                    // But here we prioritize loading the state. 
+                    // If embeddings are missing for a doc, user can force re-index or we auto-detect.
+                    // For this version, we trust the loaded embeddings, or we can run a check:
+                    indexDocuments(false); // check for missing
                 }
 
             } catch (err) {
@@ -2388,8 +2648,6 @@
             e.target.value = '';
         }
 
-        // --- Interaction / Global Mouse Handlers ---
-
         function getMousePosInViewport(evt, side) {
             const rect = els[side + 'Wrapper'].getBoundingClientRect();
             return {
@@ -2399,6 +2657,33 @@
         }
 
         function handlePointerDown(e) {
+            if (state.appMode === 'annotation' && state.annoTool === 'text') {
+                const target = e.target;
+                const tb = target.closest('.text-box');
+                
+                if (tb) {
+                    const rect = tb.getBoundingClientRect();
+                    const x = e.clientX - rect.left;
+                    const y = e.clientY - rect.top;
+                    
+                    const handleSize = 12;
+                    
+                    if (x >= -handleSize && x <= handleSize && y >= -handleSize && y <= handleSize) {
+                        e.preventDefault();
+                        startDirectTextManipulation(e, tb, 'move');
+                        return;
+                    }
+                    if (x >= rect.width - handleSize && x <= rect.width + handleSize &&
+                        y >= rect.height - handleSize && y <= rect.height + handleSize) {
+                        e.preventDefault();
+                        startDirectTextManipulation(e, tb, 'resize');
+                        return;
+                    }
+                    
+                    return; 
+                }
+            }
+
             if (e.target.closest('.link-marker')) {
                 if (state.appMode === 'delete-link') {
                     e.preventDefault();
@@ -2469,7 +2754,8 @@
                             state.selection.dragStartPositions = {
                                 bbox: { ...bbox },
                                 images: state.selection.selectedImages.map(img => ({ ...img })),
-                                strokes: state.selection.selectedStrokes.map(stk => ({ points: stk.points.map(p => ({...p})) }))
+                                strokes: state.selection.selectedStrokes.map(stk => ({ points: stk.points.map(p => ({...p})) })),
+                                textBoxes: state.selection.selectedTextBoxes.map(tb => ({ ...tb }))
                             };
                             actionTaken = true;
                         } 
@@ -2491,11 +2777,35 @@
                                     state.selection = {
                                         active: true, side: clickedSide, mode: 'dragging',
                                         selectedImages: [img],
+                                        selectedTextBoxes: [],
                                         selectedStrokes: [],
                                         boundingBox: { x: img.x, y: img.y, w: img.w, h: img.h },
                                         dragStartMouse: { x: pos.x, y: pos.y }
                                     };
                                     actionTaken = true;
+                                    renderAnnotations(clickedSide);
+                                    renderTextLayer(clickedSide);
+                                    break;
+                                }
+                            }
+                        }
+                        if (!actionTaken && pageData.textBoxes) {
+                            for (let i = pageData.textBoxes.length - 1; i >= 0; i--) {
+                                const tb = pageData.textBoxes[i];
+                                if (pos.x >= tb.x && pos.x <= tb.x + tb.w &&
+                                    pos.y >= tb.y && pos.y <= tb.y + tb.h) {
+                                    clearSelection();
+                                    state.selection = {
+                                        active: true, side: clickedSide, mode: 'dragging',
+                                        selectedImages: [],
+                                        selectedTextBoxes: [tb],
+                                        selectedStrokes: [],
+                                        boundingBox: { x: tb.x, y: tb.y, w: tb.w, h: tb.h },
+                                        dragStartMouse: { x: pos.x, y: pos.y }
+                                    };
+                                    actionTaken = true;
+                                    renderAnnotations(clickedSide);
+                                    renderTextLayer(clickedSide);
                                     break;
                                 }
                             }
@@ -2514,8 +2824,17 @@
                     }
                     
                     renderAnnotations(clickedSide);
-
-                } else if (e.pointerType === 'pen' || e.button === 0) {
+                } else if (state.annoTool === 'text') {
+                    const pos = getMousePosInViewport(e, clickedSide);
+                    state.drawing.startPointData = { x: pos.x, y: pos.y };
+                    
+                    els.textCreationRect.style.left = e.clientX + 'px';
+                    els.textCreationRect.style.top = e.clientY + 'px';
+                    els.textCreationRect.style.width = '0px';
+                    els.textCreationRect.style.height = '0px';
+                    els.textCreationRect.style.display = 'block';
+                }
+                else if (e.pointerType === 'pen' || e.button === 0) {
                      if (state.annoTool === 'eraser-stroke') {
                         state.drawing.startSide = clickedSide;
                     } else {
@@ -2526,6 +2845,33 @@
             }
         }
 
+        function startDirectTextManipulation(e, domElement, type) {
+            const side = state.lastActiveSide;
+            const wrapper = els[side + 'Wrapper'];
+            const docId = state.view[side].docId;
+            const pageNum = state.view[side].pageNum;
+            
+            if (!state.annotations[docId] || !state.annotations[docId][pageNum]) return;
+            const pageData = state.annotations[docId][pageNum];
+            const box = pageData.textBoxes.find(b => b.id === domElement.dataset.id);
+            if (!box) return;
+
+            state.drawing.active = true;
+            state.drawing.pointerId = e.pointerId;
+            state.drawing.mode = type === 'move' ? 'text-move' : 'text-resize';
+            state.drawing.activeTextBox = box;
+            state.drawing.activeSide = side;
+
+            const rect = wrapper.getBoundingClientRect();
+            state.drawing.startPoint = {
+                x: box.x, y: box.y, w: box.w, h: box.h
+            };
+            state.drawing.startMouse = {
+                x: e.clientX - rect.left,
+                y: e.clientY - rect.top
+            };
+        }
+
         function handlePointerMove(e) {
             if (!state.drawing.active) return;
             if (state.drawing.pointerId !== e.pointerId) return;
@@ -2533,7 +2879,58 @@
             const side = state.drawing.startSide;
             if (!side) return;
 
-            if (state.appMode === 'linking') {
+            if (state.appMode === 'annotation' && state.annoTool === 'text') {
+                if (state.drawing.mode === 'text-move' || state.drawing.mode === 'text-resize') {
+                    const wrapper = els[side + 'Wrapper'];
+                    const box = state.drawing.activeTextBox;
+                    const startData = state.drawing.startPoint;
+                    const startMouse = state.drawing.startMouse;
+                    
+                    const wrapperRect = wrapper.getBoundingClientRect();
+                    const currentMouseX = e.clientX - wrapperRect.left;
+                    const currentMouseY = e.clientY - wrapperRect.top;
+                    
+                    const dx = (currentMouseX - startMouse.x) / wrapperRect.width;
+                    const dy = (currentMouseY - startMouse.y) / wrapperRect.height;
+
+                    const domBox = wrapper.querySelector(`.text-box[data-id="${box.id}"]`);
+
+                    if (state.drawing.mode === 'text-move') {
+                        box.x = Math.max(0, Math.min(1 - box.w, startData.x + dx));
+                        box.y = Math.max(0, Math.min(1 - box.h, startData.y + dy));
+                        if (domBox) {
+                            domBox.style.left = (box.x * 100) + '%';
+                            domBox.style.top = (box.y * 100) + '%';
+                        }
+                    } else if (state.drawing.mode === 'text-resize') {
+                        let newW = Math.max(0.05, startData.w + dx);
+                        let newH = Math.max(0.02, startData.h + dy);
+                        
+                        if (box.x + newW > 1) newW = 1 - box.x;
+                        if (box.y + newH > 1) newH = 1 - box.y;
+
+                        box.w = newW;
+                        box.h = newH;
+
+                        if (domBox) {
+                            domBox.style.width = (box.w * 100) + '%';
+                            domBox.style.height = (box.h * 100) + '%';
+                        }
+                    }
+                    return;
+                }
+                
+                const pos = getMousePosInViewport(e, side);
+                const start = state.drawing.startPointData;
+                const dx = e.clientX - (els[side+'Wrapper'].getBoundingClientRect().left + start.x * els[side+'Wrapper'].offsetWidth);
+                const dy = e.clientY - (els[side+'Wrapper'].getBoundingClientRect().top + start.y * els[side+'Wrapper'].offsetHeight);
+
+                els.textCreationRect.style.width = Math.abs(dx) + 'px';
+                els.textCreationRect.style.height = Math.abs(dy) + 'px';
+                els.textCreationRect.style.left = (e.clientX - Math.max(0, dx)) + 'px';
+                els.textCreationRect.style.top = (e.clientY - Math.max(0, dy)) + 'px';
+            }
+            else if (state.appMode === 'linking') {
                 state.drawing.currentPoint = { x: e.clientX, y: e.clientY };
                 updatePathVisual();
             } 
@@ -2553,6 +2950,10 @@
                             img.x += dx;
                             img.y += dy;
                         });
+                        state.selection.selectedTextBoxes.forEach(tb => {
+                            tb.x += dx;
+                            tb.y += dy;
+                        });
                         state.selection.selectedStrokes.forEach(stk => {
                             stk.points.forEach(p => {
                                 p.x += dx;
@@ -2565,6 +2966,7 @@
 
                         state.selection.dragStartMouse = pos;
                         renderAnnotations(side);
+                        renderTextLayer(side);
                     }
                     else if (state.selection.mode === 'resizing') {
                         const originalState = state.selection.dragStartPositions;
@@ -2582,6 +2984,14 @@
                             img.h = oldImg.h * scaleY;
                         });
 
+                        state.selection.selectedTextBoxes.forEach((tb, idx) => {
+                            const oldTb = originalState.textBoxes[idx];
+                            tb.x = originX + (oldTb.x - originX) * scaleX;
+                            tb.y = originY + (oldTb.y - originY) * scaleY;
+                            tb.w = oldTb.w * scaleX;
+                            tb.h = oldTb.h * scaleY;
+                        });
+
                         state.selection.selectedStrokes.forEach((stk, idx) => {
                             const oldStk = originalState.strokes[idx];
                             stk.points.forEach((p, pIdx) => {
@@ -2595,6 +3005,7 @@
                         state.selection.boundingBox.h = originalState.bbox.h * scaleY;
                         
                         renderAnnotations(side);
+                        renderTextLayer(side);
                     }
                 } 
                 else if (state.annoTool === 'eraser-stroke') {
@@ -2610,6 +3021,56 @@
             if (state.drawing.pointerId !== e.pointerId) return;
 
             const side = state.drawing.startSide;
+
+            if (state.appMode === 'annotation' && state.annoTool === 'text') {
+                if (state.drawing.mode === 'text-move' || state.drawing.mode === 'text-resize') {
+                    const docId = state.view[side].docId;
+                    saveAnnotationsToDB(docId, state.annotations[docId]);
+                    state.drawing.active = false;
+                    state.drawing.mode = null;
+                    state.drawing.activeTextBox = null;
+                    return;
+                }
+
+                els.textCreationRect.style.display = 'none';
+                
+                const startData = state.drawing.startPointData;
+                const endPos = getMousePosInViewport(e, side);
+                
+                let w = endPos.x - startData.x;
+                let h = endPos.y - startData.y;
+                let x = startData.x;
+                let y = startData.y;
+                
+                if (w < 0) { x += w; w = Math.abs(w); }
+                if (h < 0) { y += h; h = Math.abs(h); }
+
+                if (w > 0.01 && h > 0.01) {
+                    const docId = state.view[side].docId;
+                    const pageNum = state.view[side].pageNum;
+                    
+                    if (!state.annotations[docId]) state.annotations[docId] = {};
+                    if (!state.annotations[docId][pageNum]) state.annotations[docId][pageNum] = { strokes: [], images: [], textBoxes: [] };
+
+                    const newBox = {
+                        id: 'tb_' + Date.now(),
+                        x: x, y: y, w: w, h: h,
+                        content: '',
+                        color: state.annoColor,
+                        fontSize: 14 
+                    };
+
+                    state.annotations[docId][pageNum].textBoxes.push(newBox);
+                    await saveAnnotationsToDB(docId, state.annotations[docId]);
+                    renderTextLayer(side);
+
+                    setTimeout(() => {
+                        const boxEl = els[side+'Wrapper'].querySelector(`.text-box[data-id="${newBox.id}"]`);
+                        if(boxEl) boxEl.focus();
+                    }, 0);
+                }
+            }
+
             if (state.appMode === 'linking') {
                 const leftRect = els.leftWrapper.getBoundingClientRect();
                 const rightRect = els.rightWrapper.getBoundingClientRect();
@@ -2671,6 +3132,7 @@
 
                             if (pageData) {
                                 const selectedImgs = [];
+                                const selectedTbs = [];
                                 const selectedStks = [];
                                 let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
                                 let hasSelection = false;
@@ -2685,6 +3147,20 @@
                                             if(img.y < minY) minY = img.y;
                                             if(img.x + img.w > maxX) maxX = img.x + img.w;
                                             if(img.y + img.h > maxY) maxY = img.y + img.h;
+                                        }
+                                    });
+                                }
+
+                                if (pageData.textBoxes) {
+                                    pageData.textBoxes.forEach(tb => {
+                                        const bounds = { x: tb.x, y: tb.y, w: tb.w, h: tb.h };
+                                        if (rectsIntersect(selRect, bounds)) {
+                                            selectedTbs.push(tb);
+                                            hasSelection = true;
+                                            if(tb.x < minX) minX = tb.x;
+                                            if(tb.y < minY) minY = tb.y;
+                                            if(tb.x + tb.w > maxX) maxX = tb.x + tb.w;
+                                            if(tb.y + tb.h > maxY) maxY = tb.y + tb.h;
                                         }
                                     });
                                 }
@@ -2706,6 +3182,7 @@
 
                                 if (hasSelection) {
                                     state.selection.selectedImages = selectedImgs;
+                                    state.selection.selectedTextBoxes = selectedTbs;
                                     state.selection.selectedStrokes = selectedStks;
                                     state.selection.boundingBox = {
                                         x: minX,
@@ -2727,12 +3204,14 @@
                         clearSelection();
                     }
                 } else {
+                    clearSelection();
                     state.selection.mode = 'idle';
                     const docId = state.view[side].docId;
                     saveAnnotationsToDB(docId, state.annotations[docId]);
                 }
                 renderAnnotations(side);
-            } else if (state.annoTool !== 'eraser-stroke') {
+                renderTextLayer(side);
+            } else if (state.annoTool !== 'text' && state.annoTool !== 'eraser-stroke') {
                 finishAnnotationStroke(side);
             } else {
                 const docId = state.view[side].docId;

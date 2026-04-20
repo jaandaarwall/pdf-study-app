@@ -278,10 +278,11 @@
                     <input type="color" id="color-picker" class="absolute -top-2 -left-2 w-12 h-12 p-0 border-0 cursor-pointer" value="#ef4444">
                 </div>
 
-                <div class="flex items-center gap-1 mx-1 w-24" title="Pen Thickness">
+                <div class="flex items-center gap-1 mx-1 w-auto" title="Pen Thickness">
                     <i class="fa-solid fa-circle text-[8px] text-gray-400"></i>
-                    <input type="range" id="thickness-picker" min="1" max="20" value="5" class="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600">
+                    <input type="range" id="thickness-picker" min="1" max="20" value="5" class="w-20 h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600">
                     <i class="fa-solid fa-circle text-sm text-gray-400"></i>
+                    <span id="thickness-val" class="text-xs font-mono text-gray-600 w-6 text-center">5</span>
                 </div>
 
                 <div class="w-px h-5 bg-gray-300 mx-1"></div>
@@ -1896,7 +1897,12 @@
                 saveSettings();
             });
             els.thicknessPicker.addEventListener('input', (e) => {
-                state.annoThickness = parseInt(e.value);
+                state.annoThickness = parseInt(e.target.value);
+                const display = document.getElementById('thickness-val');
+                if (display) {
+                    display.innerText = state.annoThickness;
+                }
+
                 saveSettings();
             });
 

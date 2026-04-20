@@ -2327,31 +2327,11 @@
                 }
             });
 
+            // NEW SMOOTH CODE
             pageData.strokes.forEach(stroke => {
-                ctx.beginPath();
-                ctx.lineCap = 'round';
-                ctx.lineJoin = 'round';
-                
-                if (stroke.tool === 'eraser-pixel') {
-                    ctx.globalCompositeOperation = 'destination-out';
-                    ctx.lineWidth = stroke.size * width; 
-                } else {
-                    ctx.globalCompositeOperation = 'source-over';
-                    ctx.strokeStyle = stroke.color;
-                    ctx.lineWidth = stroke.size * width; 
-                }
-
-                if (stroke.points.length > 0) {
-                    const p0 = stroke.points[0];
-                    ctx.moveTo(p0.x * width, p0.y * height);
-                    for (let i = 1; i < stroke.points.length; i++) {
-                        const p = stroke.points[i];
-                        ctx.lineTo(p.x * width, p.y * height);
-                    }
-                }
-                ctx.stroke();
+                const isEraser = (stroke.tool === 'eraser-pixel');
+                drawSmoothPath(ctx, stroke.points, width, height, stroke.size, stroke.color, isEraser);
             });
-            ctx.globalCompositeOperation = 'source-over';
 
             if (state.selection.active && state.selection.side === side && state.selection.mode === 'marquee') {
                 const start = state.selection.marqueeStart;
@@ -2388,6 +2368,55 @@
                 }
             }
         }
+
+
+        // --- NEW HELPER FUNCTION FOR SMOOTH DRAWING ---
+        function drawSmoothPath(ctx, points, width, height, strokeSize, strokeColor, isEraser) {
+            if (points.length < 2) return;
+
+            ctx.beginPath();
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            if (isEraser) {
+                ctx.globalCompositeOperation = 'destination-out';
+                ctx.lineWidth = strokeSize * width; 
+            } else {
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.strokeStyle = strokeColor;
+                ctx.lineWidth = strokeSize * width; 
+            }
+
+            // Start at the first point
+            let p0 = points[0];
+            ctx.moveTo(p0.x * width, p0.y * height);
+
+            // If only 2 points, draw a straight line (no curve possible)
+            if (points.length === 2) {
+                ctx.lineTo(points[1].x * width, points[1].y * height);
+            } else {
+                // Loop through points to create quadratic curves
+                for (let i = 1; i < points.length - 1; i++) {
+                    let p_curr = points[i];
+                    let p_next = points[i + 1];
+
+                    // Calculate the midpoint between current and next point
+                    let midX = (p_curr.x + p_next.x) / 2 * width;
+                    let midY = (p_curr.y + p_next.y) / 2 * height;
+
+                    // Draw a quadratic curve to the midpoint, using the current point as the control point
+                    ctx.quadraticCurveTo(p_curr.x * width, p_curr.y * height, midX, midY);
+                }
+                
+                // Connect to the very last point
+                let last = points[points.length - 1];
+                ctx.lineTo(last.x * width, last.y * height);
+            }
+
+            ctx.stroke();
+            ctx.globalCompositeOperation = 'source-over';
+        }
+        
 
         function startAnnotationStroke(side, x, y) {
             const docId = state.view[side].docId;
@@ -2442,7 +2471,6 @@
             const height = canvas.height;
             const pts = currentStroke.points;
 
-            ctx.beginPath();
             ctx.lineCap = 'round';
             ctx.lineJoin = 'round';
             
@@ -2455,13 +2483,35 @@
                 ctx.lineWidth = currentStroke.size * width;
             }
 
-            const prev = pts[pts.length - 2];
-            ctx.moveTo(prev.x * width, prev.y * height);
-            ctx.lineTo(x * width, y * height);
-            ctx.stroke();
+            // --- SMOOTH REAL-TIME DRAWING LOGIC ---
+            if (pts.length >= 3) {
+                const p1 = pts[pts.length - 3];
+                const p2 = pts[pts.length - 2];
+                const p3 = pts[pts.length - 1];
+
+                // Calculate midpoints
+                const mid1x = (p1.x + p2.x) / 2 * width;
+                const mid1y = (p1.y + p2.y) / 2 * height;
+                const mid2x = (p2.x + p3.x) / 2 * width;
+                const mid2y = (p2.y + p3.y) / 2 * height;
+
+                // Draw the quadratic curve
+                ctx.beginPath();
+                ctx.moveTo(mid1x, mid1y);
+                ctx.quadraticCurveTo(p2.x * width, p2.y * height, mid2x, mid2y);
+                ctx.stroke();
+            } else if (pts.length === 2) {
+                // Fallback for very short strokes
+                const p1 = pts[0];
+                const p2 = pts[1];
+                ctx.beginPath();
+                ctx.moveTo(p1.x * width, p1.y * height);
+                ctx.lineTo(p2.x * width, p2.y * height);
+                ctx.stroke();
+            }
+            
             ctx.globalCompositeOperation = 'source-over';
         }
-
         function finishAnnotationStroke(side) {
             const docId = state.view[side].docId;
             saveAnnotationsToDB(docId, state.annotations[docId]);

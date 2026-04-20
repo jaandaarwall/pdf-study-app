@@ -205,7 +205,46 @@
             position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
             opacity: 0; transition: opacity 0.2s; display: flex; gap: 4px;
         }
-        .chat-list-item:hover .chat-item-actions { opacity: 1; }
+        .chat-list-item:hover .chat-item-actions { opacity: 1; }                
+        /* --- Tool Cursor Styles --- */
+        #tool-cursor {
+            font-size: 24px;
+            color: #374151; /* Default gray-700 */
+            /* Offset to align tip with mouse cursor point */
+            transform: translate(-5px, -20px) rotate(-45deg); 
+            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            transition: opacity 0.1s ease;
+        }
+
+        /* Highlighter specific styling */
+        #tool-cursor.mode-highlighter {
+            color: #ca8a04; /* Yellow-600 */
+            transform: translate(-1px, -2px) rotate(-270deg); 
+        }
+
+        /* Eraser specific styling */
+        #tool-cursor.mode-eraser {
+            color: #9ca3af; /* Gray-400 */
+            transform: translate(-1px, -2px) rotate(-270deg); 
+        }
+
+        /* Hide default cursor when tool is active */
+        .cursor-none { 
+            cursor: none !important; 
+        }
+        /* Pen specific styling */
+        #tool-cursor.mode-pen {
+            transform: translate(-1px, -2px) rotate(-270deg); 
+        }
+        /* --- Fix for double cursor (Pen/Eraser Crosshair) --- */
+        /* Force hide default cursor on all canvas layers when 'cursor-none' class is active */
+        body.cursor-none .pdf-canvas,
+        body.cursor-none .annotation-canvas,
+        body.cursor-none .textLayer,
+        body.cursor-none .pdf-canvas-container {
+            cursor: none !important;
+        }
+
     </style>
     <script>
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -263,6 +302,9 @@
                 </button>
                 <button id="tool-eraser-stroke" class="w-8 h-8 rounded flex items-center justify-center text-gray-500 hover:bg-gray-100 transition-colors" onclick="setAnnoTool('eraser-stroke')" title="Stroke Eraser (Swipe to Delete)">
                     <i class="fa-solid fa-ban"></i>
+                </button>
+                <button id="tool-highlighter" class="w-8 h-8 rounded flex items-center justify-center text-yellow-600 hover:bg-yellow-50 transition-colors" onclick="setAnnoTool('highlighter')" title="Highlighter">
+                    <i class="fa-solid fa-highlighter"></i>
                 </button>
                 
                 <div class="w-px h-5 bg-gray-300 mx-1"></div>
@@ -520,6 +562,10 @@
         </main>
     </div>
 
+    <div id="tool-cursor" class="hidden fixed pointer-events-none z-[100] flex items-center justify-center">
+        <i id="tool-cursor-icon" class="fa-thin fa-pen"></i>
+    </div>
+
     <div id="modal" class="fixed inset-0 modal-backdrop hidden flex items-center justify-center z-50">
         <div class="bg-white rounded-lg shadow-xl p-6 max-w-sm w-full">
             <h3 id="modal-title" class="text-lg font-bold mb-2">Alert</h3>
@@ -692,7 +738,15 @@
             // AI State
             embeddings: [],
             isIndexing: false,
-            currentContextChunks: []
+            currentContextChunks: [],
+            // --- ADD THIS SECTION ---
+            // Store specific settings for each tool so they don't overlap
+            toolSettings: {
+                pen: { color: '#ef4444', thickness: 5 },
+                highlighter: { color: '#facc15', thickness: 20 }, // Default Yellow, Thick
+                eraserPixel: { thickness: 20 },
+                eraserStroke: { thickness: 5 }
+    },
         };
 
         const els = {
@@ -751,7 +805,10 @@
             chatList: document.getElementById('chat-list'),
             chatInput: document.getElementById('chat-input'),
             sendChatBtn: document.getElementById('send-chat-btn'),
-            aiStatus: document.getElementById('ai-status')
+            aiStatus: document.getElementById('ai-status'),
+            // <--- ADD THIS LINE RIGHT HERE --->
+            toolHighlighter: document.getElementById('tool-highlighter'),
+            // <---------------------------------->
         };
 
         // --- Chat Management Logic ---
@@ -1073,9 +1130,7 @@
             ).join("\n---\n");
 
             const systemPrompt = `You are a helpful assistant answering questions based on the provided PDF context.
-            Use the context below to answer the user's question.
-            If the answer is not in the context, say "I don't know based on the provided documents."
-            IMPORTANT: When referencing information from the numbered sources, cite them using the format [1], [2], etc.`;
+            Use the context below to answer the user's question.`;
 
             const fullPrompt = `${systemPrompt}\n\nContext:\n${contextText}\n\nUser Question: ${question}\n\nAnswer:`;
 
@@ -1890,17 +1945,34 @@
             window.addEventListener('keydown', handleKeyDown);
             els.leftViewport.addEventListener('scroll', () => handleScroll('left'));
             els.rightViewport.addEventListener('scroll', () => handleScroll('right'));
-            
+                        
+            // Color Picker Event Listener
             els.colorPicker.addEventListener('input', (e) => {
                 state.annoColor = e.target.value;
+                
+                // Save to the CURRENT tool's memory
+                if (state.toolSettings && state.toolSettings[state.annoTool]) {
+                    state.toolSettings[state.annoTool].color = state.annoColor;
+                }
+                
+                // If we are currently in pen mode, refresh style (optional, but safe)
                 if (state.annoTool === 'pen') setAnnoTool('pen', false); 
                 saveSettings();
             });
+
+            // Thickness Picker Event Listener
             els.thicknessPicker.addEventListener('input', (e) => {
                 state.annoThickness = parseInt(e.target.value);
+                
+                // Update the text display
                 const display = document.getElementById('thickness-val');
                 if (display) {
                     display.innerText = state.annoThickness;
+                }
+
+                // Save to the CURRENT tool's memory
+                if (state.toolSettings && state.toolSettings[state.annoTool]) {
+                    state.toolSettings[state.annoTool].thickness = state.annoThickness;
                 }
 
                 saveSettings();
@@ -1961,36 +2033,79 @@
             }
         }
 
+
         function setAnnoTool(tool, save = true) {
             state.annoTool = tool;
             if (save) saveSettings();
 
-            [els.toolSelect, els.toolPen, els.toolText, els.toolEraserPixel, els.toolEraserStroke].forEach(btn => {
-                btn.classList.remove('bg-blue-50', 'text-blue-600', 'bg-purple-50', 'text-purple-600');
+            // Reset all tool buttons
+            const allTools = [els.toolSelect, els.toolPen, els.toolText, els.toolEraserPixel, els.toolEraserStroke, els.toolHighlighter];
+            allTools.forEach(btn => {
+                btn.classList.remove('bg-blue-50', 'text-blue-600', 'bg-purple-50', 'text-purple-600', 'bg-yellow-100', 'text-yellow-700');
                 btn.classList.add('text-gray-500');
             });
-            document.body.classList.remove('anno-pen', 'anno-pixel-eraser', 'anno-stroke-eraser', 'anno-select', 'anno-text');
 
+            // Remove all tool-specific body classes
+            document.body.classList.remove('anno-pen', 'anno-pixel-eraser', 'anno-stroke-eraser', 'anno-select', 'anno-text', 'anno-highlighter');
+
+            // --- DYNAMIC SETTINGS LOGIC ---
+            // Ensure settings exist (fallback for old saves)
+            if (!state.toolSettings) {
+                state.toolSettings = {
+                    pen: { color: '#ef4444', thickness: 5 },
+                    highlighter: { color: '#facc15', thickness: 20 }
+                };
+            }
+
+            // Apply the specific tool's settings to the global state and UI
+            if (state.toolSettings[tool]) {
+                const settings = state.toolSettings[tool];
+                
+                if (settings.color !== undefined) {
+                    state.annoColor = settings.color;
+                    els.colorPicker.value = settings.color;
+                }
+                if (settings.thickness !== undefined) {
+                    state.annoThickness = settings.thickness;
+                    els.thicknessPicker.value = settings.thickness;
+                    
+                    // Update the text number display
+                    const thicknessDisplay = document.getElementById('thickness-val');
+                    if(thicknessDisplay) thicknessDisplay.innerText = settings.thickness;
+                }
+            }
+            // ------------------------------
+
+            // Activate specific tool visual state
             if (tool === 'select') {
                 els.toolSelect.classList.add('bg-purple-50', 'text-purple-600');
                 els.toolSelect.classList.remove('text-gray-500');
                 document.body.classList.add('anno-select');
-            } else if (tool === 'pen') {
+            } 
+            else if (tool === 'pen') {
                 els.toolPen.classList.add('bg-blue-50', 'text-blue-600');
                 els.toolPen.classList.remove('text-gray-500');
                 document.body.classList.add('anno-pen');
-            } else if (tool === 'text') {
+            } 
+            else if (tool === 'text') {
                 els.toolText.classList.add('bg-blue-50', 'text-blue-600');
                 els.toolText.classList.remove('text-gray-500');
                 document.body.classList.add('anno-text');
-            } else if (tool === 'eraser-pixel') {
+            } 
+            else if (tool === 'eraser-pixel') {
                 els.toolEraserPixel.classList.add('bg-blue-50', 'text-blue-600');
                 els.toolEraserPixel.classList.remove('text-gray-500');
                 document.body.classList.add('anno-pixel-eraser');
-            } else if (tool === 'eraser-stroke') {
+            } 
+            else if (tool === 'eraser-stroke') {
                 els.toolEraserStroke.classList.add('bg-blue-50', 'text-blue-600');
                 els.toolEraserStroke.classList.remove('text-gray-500');
                 document.body.classList.add('anno-stroke-eraser');
+            }
+            else if (tool === 'highlighter') {
+                els.toolHighlighter.classList.add('bg-yellow-100', 'text-yellow-700');
+                els.toolHighlighter.classList.remove('text-gray-500');
+                document.body.classList.add('anno-highlighter');
             }
         }
 
@@ -2336,7 +2451,8 @@
             // NEW SMOOTH CODE
             pageData.strokes.forEach(stroke => {
                 const isEraser = (stroke.tool === 'eraser-pixel');
-                drawSmoothPath(ctx, stroke.points, width, height, stroke.size, stroke.color, isEraser);
+                // drawSmoothPath(ctx, stroke.points, width, height, stroke.size, stroke.color, isEraser);
+                drawSmoothPath(ctx, stroke, width, height); 
             });
 
             if (state.selection.active && state.selection.side === side && state.selection.mode === 'marquee') {
@@ -2375,29 +2491,45 @@
             }
         }
 
-
-        // --- NEW HELPER FUNCTION FOR SMOOTH DRAWING ---
-        function drawSmoothPath(ctx, points, width, height, strokeSize, strokeColor, isEraser) {
+        function drawSmoothPath(ctx, stroke, width, height) {
+            const points = stroke.points;
             if (points.length < 2) return;
 
             ctx.beginPath();
             ctx.lineCap = 'round';
             ctx.lineJoin = 'round';
 
+            const isEraser = (stroke.tool === 'eraser-pixel');
+            const isHighlighter = (stroke.tool === 'highlighter');
+
             if (isEraser) {
+                // Eraser Logic
                 ctx.globalCompositeOperation = 'destination-out';
-                ctx.lineWidth = strokeSize * width; 
-            } else {
+                ctx.lineWidth = stroke.size * width; 
+            } 
+            else if (isHighlighter) {
+                // HIGHLIGHTER LOGIC
+                // 'multiply' blends the color with the text underneath so text remains readable
+                ctx.globalCompositeOperation = 'multiply'; 
+                // Set transparency (0.4 = 40% opacity)
+                ctx.globalAlpha = 0.4; 
+                ctx.strokeStyle = stroke.color;
+                // Highlighters are usually wider than the pen stroke size implies
+                ctx.lineWidth = stroke.size * width * 3; 
+            } 
+            else {
+                // Standard Pen Logic
                 ctx.globalCompositeOperation = 'source-over';
-                ctx.strokeStyle = strokeColor;
-                ctx.lineWidth = strokeSize * width; 
+                ctx.strokeStyle = stroke.color;
+                ctx.lineWidth = stroke.size * width; 
             }
 
+            // --- Curve Drawing Logic ---
             // Start at the first point
             let p0 = points[0];
             ctx.moveTo(p0.x * width, p0.y * height);
 
-            // If only 2 points, draw a straight line (no curve possible)
+            // If only 2 points, draw a straight line
             if (points.length === 2) {
                 ctx.lineTo(points[1].x * width, points[1].y * height);
             } else {
@@ -2410,7 +2542,7 @@
                     let midX = (p_curr.x + p_next.x) / 2 * width;
                     let midY = (p_curr.y + p_next.y) / 2 * height;
 
-                    // Draw a quadratic curve to the midpoint, using the current point as the control point
+                    // Draw a quadratic curve to the midpoint
                     ctx.quadraticCurveTo(p_curr.x * width, p_curr.y * height, midX, midY);
                 }
                 
@@ -2420,7 +2552,10 @@
             }
 
             ctx.stroke();
+
+            // --- Reset Context ---
             ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = 1.0;
         }
         
 
@@ -2432,6 +2567,21 @@
             if (!state.annotations[docId][pageNum]) state.annotations[docId][pageNum] = { strokes: [], images: [], textBoxes: [] };
 
             const normalizedSize = state.annoThickness / 1000; 
+            
+            // --- FIX: Determine specific rendering settings for this tool ---
+            let sizeMultiplier = 1;
+            let compositeOp = 'source-over';
+            let alpha = 1.0;
+
+            if (state.annoTool === 'eraser-pixel') {
+                compositeOp = 'destination-out';
+            } else if (state.annoTool === 'highlighter') {
+                // Highlighter settings (must match drawSmoothPath)
+                compositeOp = 'multiply';
+                alpha = 0.4;
+                sizeMultiplier = 3; 
+            }
+            // -----------------------------------------------------------
 
             const newStroke = {
                 tool: state.annoTool,
@@ -2449,18 +2599,24 @@
 
             ctx.beginPath();
             ctx.lineCap = 'round';
-            if (state.annoTool === 'eraser-pixel') {
-                ctx.globalCompositeOperation = 'destination-out';
-                ctx.lineWidth = normalizedSize * width;
-            } else {
-                ctx.globalCompositeOperation = 'source-over';
+            
+            // Apply calculated settings
+            ctx.globalCompositeOperation = compositeOp;
+            ctx.globalAlpha = alpha;
+            ctx.lineWidth = normalizedSize * width * sizeMultiplier; // Apply Multiplier
+
+            if (state.annoTool !== 'eraser-pixel') {
                 ctx.strokeStyle = state.annoColor;
-                ctx.lineWidth = normalizedSize * width;
             }
+            
+            // Draw initial dot
             ctx.moveTo(x * width, y * height);
             ctx.lineTo(x * width, y * height);
             ctx.stroke();
+            
+            // Reset context
             ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = 1.0;
         }
 
         function continueAnnotationStroke(side, x, y) {
@@ -2480,13 +2636,28 @@
             ctx.lineCap = 'round';
             ctx.lineJoin = 'round';
             
+            // --- FIX: Determine specific rendering settings for this tool ---
+            let sizeMultiplier = 1;
+            let compositeOp = 'source-over';
+            let alpha = 1.0;
+
             if (state.annoTool === 'eraser-pixel') {
-                ctx.globalCompositeOperation = 'destination-out';
-                ctx.lineWidth = currentStroke.size * width;
-            } else {
-                ctx.globalCompositeOperation = 'source-over';
+                compositeOp = 'destination-out';
+            } else if (state.annoTool === 'highlighter') {
+                // Highlighter settings (must match drawSmoothPath)
+                compositeOp = 'multiply';
+                alpha = 0.4;
+                sizeMultiplier = 3; 
+            }
+            // -----------------------------------------------------------
+
+            // Apply settings
+            ctx.globalCompositeOperation = compositeOp;
+            ctx.globalAlpha = alpha;
+            ctx.lineWidth = currentStroke.size * width * sizeMultiplier; // Apply Multiplier
+
+            if (state.annoTool !== 'eraser-pixel') {
                 ctx.strokeStyle = currentStroke.color;
-                ctx.lineWidth = currentStroke.size * width;
             }
 
             // --- SMOOTH REAL-TIME DRAWING LOGIC ---
@@ -2516,8 +2687,11 @@
                 ctx.stroke();
             }
             
+            // Reset context
             ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = 1.0;
         }
+
         function finishAnnotationStroke(side) {
             const docId = state.view[side].docId;
             saveAnnotationsToDB(docId, state.annotations[docId]);
@@ -3271,7 +3445,55 @@
             };
         }
 
+
         function handlePointerMove(e) {
+            const cursorEl = document.getElementById('tool-cursor');
+            const cursorIcon = document.getElementById('tool-cursor-icon');
+            
+            // 1. Check if mouse is INSIDE a PDF viewport (Left or Right)
+            const isInsideViewport = e.target.closest('#left-canvas-wrapper') || e.target.closest('#right-canvas-wrapper');
+            
+            // 2. Check conditions to show custom cursor
+            const showCustomCursor = (
+                state.appMode === 'annotation' && 
+                isInsideViewport &&
+                ['pen', 'highlighter', 'eraser-pixel', 'eraser-stroke'].includes(state.annoTool)
+            );
+
+            if (showCustomCursor) {
+                // HIDE DEFAULT MOUSE
+                document.body.classList.add('cursor-none');
+
+                // SHOW CUSTOM ICON
+                cursorEl.classList.remove('hidden');
+                cursorEl.style.left = e.clientX + 'px';
+                cursorEl.style.top = e.clientY + 'px';
+
+                // Reset classes
+                cursorEl.className = 'fixed pointer-events-none z-[100] flex items-center justify-center';
+                cursorIcon.className = 'fa-solid';
+
+                // Set Icon and Style based on current tool
+                if (state.annoTool === 'pen') {
+                    cursorIcon.classList.add('fa-pen');
+                    // <--- ADD THIS LINE --->
+                    cursorEl.classList.add('mode-pen');
+                } 
+                else if (state.annoTool === 'highlighter') {
+                    cursorIcon.classList.add('fa-highlighter');
+                    cursorEl.classList.add('mode-highlighter');
+                } 
+                else if (state.annoTool === 'eraser-pixel' || state.annoTool === 'eraser-stroke') {
+                    cursorIcon.classList.add('fa-eraser');
+                    cursorEl.classList.add('mode-eraser');
+                }
+            } 
+            else {
+                // RESTORE DEFAULT MOUSE & HIDE CUSTOM ICON
+                document.body.classList.remove('cursor-none');
+                cursorEl.classList.add('hidden');
+            }
+
             if (!state.drawing.active) return;
             if (state.drawing.pointerId !== e.pointerId) return;
 
@@ -3416,6 +3638,15 @@
         }
 
         async function handlePointerUp(e) {
+
+        // --- HIDE TOOL CURSOR ---
+            const cursorEl = document.getElementById('tool-cursor');
+            if(cursorEl) cursorEl.classList.add('hidden');
+            // RESTORE MOUSE CURSOR IMMEDIATELY
+            document.body.classList.remove('cursor-none');
+            // ------------------------
+
+
             if (!state.drawing.active) return;
             if (state.drawing.pointerId !== e.pointerId) return;
 

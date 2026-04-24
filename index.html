@@ -1090,6 +1090,7 @@
             els.aiStatus.innerText = msg;
         }
 
+
         async function highlightChunk(text, side) {
             const layer = document.getElementById(`${side}-search-layer`);
             layer.innerHTML = ''; 
@@ -1102,33 +1103,74 @@
                 const textContent = await page.getTextContent();
                 const viewport = page.getViewport({ scale: viewState.scale });
                 
-                const measureCtx = state.measureCanvas.getContext('2d');
-                const searchTerm = text.substring(0, 100).trim();
-                let found = false;
-                for (let itemIdx = 0; itemIdx < textContent.items.length; itemIdx++) {
-                    const item = textContent.items[itemIdx];
-                    if (item.str.includes(searchTerm)) {
-                        const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
-                        const left = tx[4];
-                        const bottom = tx[5];
-                        const fontSize = Math.sqrt((tx[0] * tx[0]) + (tx[1] * tx[1]));
-                        const top = bottom - fontSize;
-                        
-                        const cssFontFamily = getCssFontFamily(item.fontName);
-                        measureCtx.font = `${fontSize}px ${cssFontFamily}`;
-                        const matchWidth = measureCtx.measureText(searchTerm).width;
+                // Extract first 80 chars of chunk, cleaned up
+                const searchTerm = text.substring(0, 80).trim().toLowerCase().replace(/\s+/g, ' ');
+                const searchWords = searchTerm.split(' ').filter(w => w.length > 2);
+                
+                // Build full page text with position mapping
+                const itemsWithPos = textContent.items.map(item => ({
+                    item,
+                    text: item.str,
+                    lower: item.str.toLowerCase()
+                }));
 
-                        const div = document.createElement('div');
-                        div.className = 'citation-highlight'; 
-                        div.style.left = `${left}px`;
-                        div.style.top = `${top}px`;
-                        div.style.width = `${matchWidth}px`;
-                        div.style.height = `${fontSize}px`;
-                        layer.appendChild(div);
-                        found = true;
-                        break; 
+                let bestMatchItems = [];
+                let bestScore = 0;
+
+                // Sliding window: try groups of consecutive items
+                for (let start = 0; start < itemsWithPos.length; start++) {
+                    for (let len = 1; len <= Math.min(8, itemsWithPos.length - start); len++) {
+                        const group = itemsWithPos.slice(start, start + len);
+                        const groupText = group.map(g => g.lower).join(' ');
+                        
+                        // Count how many search words appear in this group
+                        const matchCount = searchWords.filter(w => groupText.includes(w)).length;
+                        const score = matchCount / searchWords.length;
+
+                        if (score > bestScore && score > 0.5) {
+                            bestScore = score;
+                            bestMatchItems = group.map(g => g.item);
+                        }
                     }
                 }
+
+                // Highlight all matched items
+                bestMatchItems.forEach(item => {
+                    const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+                    const left = tx[4];
+                    const bottom = tx[5];
+                    const fontSize = Math.sqrt((tx[0] * tx[0]) + (tx[1] * tx[1]));
+                    const top = bottom - fontSize;
+
+                    const measureCtx = state.measureCanvas.getContext('2d');
+                    const cssFontFamily = getCssFontFamily(item.fontName);
+                    measureCtx.font = `${fontSize}px ${cssFontFamily}`;
+                    const textWidth = measureCtx.measureText(item.str).width;
+
+                    const div = document.createElement('div');
+                    div.className = 'citation-highlight';
+                    div.style.left = `${left}px`;
+                    div.style.top = `${top}px`;
+                    div.style.width = `${textWidth}px`;
+                    div.style.height = `${fontSize + 2}px`;
+                    layer.appendChild(div);
+                });
+
+                // Auto-scroll to highlight
+                if (bestMatchItems.length > 0) {
+                    const firstItem = bestMatchItems[0];
+                    const tx = pdfjsLib.Util.transform(
+                        page.getViewport({ scale: viewState.scale }).transform, 
+                        firstItem.transform
+                    );
+                    const viewport_el = els[side + 'Viewport'];
+                    const elementTop = tx[5];
+                    viewport_el.scrollTo({ 
+                        top: elementTop - viewport_el.clientHeight / 2, 
+                        behavior: 'smooth' 
+                    });
+                }
+
             } catch (e) {
                 console.error("Error highlighting chunk", e);
             }

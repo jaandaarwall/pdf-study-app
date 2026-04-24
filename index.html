@@ -903,11 +903,59 @@
             }
 
             chat.messages.forEach(msg => {
-                appendMessageToDOM(msg.role, msg.html);
+                let htmlContent = msg.html;
+
+                if (msg.role === 'assistant' && msg.context && htmlContent.includes('jumpToCitation')) {
+                    
+                    // Helper to create tooltip text
+                    const getTooltip = (chunk) => {
+                        const snippet = chunk.text.length > 150 ? chunk.text.substring(0, 150) + "..." : chunk.text;
+                        return `Source: ${chunk.docName} (Page ${chunk.pageNum})\nText: ${snippet}`;
+                    };
+
+                    // 1. Upgrade Inline Citations (Add Title attribute)
+                    htmlContent = htmlContent.replace(
+                        /<span class="citation-chip" onclick="jumpToCitation\((\d+)\)">(\d+)<\/span>/g, 
+                        (match, idxStr, text) => {
+                            const idx = parseInt(idxStr);
+                            const chunk = msg.context[idx];
+                            if (chunk) {
+                                return `<span class="citation-chip" onclick="handleCitationClick(this)" 
+                                            data-doc="${chunk.docId}" 
+                                            data-page="${chunk.pageNum}" 
+                                            data-text="${encodeURIComponent(chunk.text)}"
+                                            title="${escapeHtml(getTooltip(chunk))}">${text}</span>`;
+                            }
+                            return match;
+                        }
+                    );
+
+                    // 2. Upgrade Footer Citations (Remove Name, Add Title, Keep Attributes)
+                    // Matches: <span ... onclick="jumpToCitation(X)">[X] DocName P1</span>
+                    htmlContent = htmlContent.replace(
+                        /<span class="text-\[10px\] bg-blue-50 text-blue-600 border border-blue-200 px-2 py-1 rounded cursor-pointer hover:bg-blue-100" onclick="jumpToCitation\((\d+)\)">.*?<\/span>/g,
+                        (match, idxStr) => {
+                            const idx = parseInt(idxStr);
+                            const chunk = msg.context[idx];
+                            if (chunk) {
+                                return `<span class="text-[10px] bg-blue-50 text-blue-600 border border-blue-200 px-2 py-1 rounded cursor-pointer hover:bg-blue-100" 
+                                            onclick="handleCitationClick(this)"
+                                            data-doc="${chunk.docId}" 
+                                            data-page="${chunk.pageNum}" 
+                                            data-text="${encodeURIComponent(chunk.text)}"
+                                            title="${escapeHtml(getTooltip(chunk))}">
+                                            [${idx+1}]
+                                        </span>`;
+                            }
+                            return match;
+                        }
+                    );
+                }
+                
+                appendMessageToDOM(msg.role, htmlContent);
             });
             els.chatHistory.scrollTop = els.chatHistory.scrollHeight;
         }
-
         function appendMessageToDOM(role, htmlContent) {
             const msgDiv = document.createElement('div');
             msgDiv.className = `ai-message ${role}`;
@@ -1095,11 +1143,9 @@
             const question = els.chatInput.value.trim();
             if (!question) return;
 
-            // Save user message
             const chat = state.chats.find(c => c.id === state.currentChatId);
             if (!chat) return;
 
-            // Update title if first message
             if (chat.messages.length === 0) {
                 chat.title = question.substring(0, 30) + (question.length > 30 ? "..." : "");
                 saveChatToDB(chat);
@@ -1136,29 +1182,70 @@
 
             const answer = await generateLLMResponse(fullPrompt);
 
+            // --- CHANGED: Generate HTML with Tooltips ---
             const formattedAnswer = answer.replace(/\[(\d+)\]/g, (match, num) => {
-                return `<span class="citation-chip" onclick="jumpToCitation(${parseInt(num)-1})">${num}</span>`;
+                const idx = parseInt(num) - 1;
+                const emb = scoredEmbeddings[idx];
+                if (!emb) return match; 
+
+                const snippet = emb.text.length > 150 ? emb.text.substring(0, 150) + "..." : emb.text;
+                const tooltipText = `Source: ${emb.docName} (Page ${emb.pageNum})\nText: ${snippet}`;
+
+                return `<span class="citation-chip" onclick="handleCitationClick(this)" 
+                            data-doc="${emb.docId}" 
+                            data-page="${emb.pageNum}" 
+                            data-text="${encodeURIComponent(emb.text)}"
+                            title="${escapeHtml(tooltipText)}">${num}</span>`;
             });
 
             let contentHtml = formattedAnswer;
             contentHtml += `<div class="mt-2 pt-2 border-t border-gray-200 flex flex-wrap gap-1">`;
             scoredEmbeddings.forEach((emb, idx) => {
-                contentHtml += `<span class="text-[10px] bg-blue-50 text-blue-600 border border-blue-200 px-2 py-1 rounded cursor-pointer hover:bg-blue-100" onclick="jumpToCitation(${idx})">
-                    [${idx+1}] ${emb.docName} P${emb.pageNum}
+                // --- CHANGED: Footer links show only [num], with Tooltip ---
+                const snippet = emb.text.length > 150 ? emb.text.substring(0, 150) + "..." : emb.text;
+                const tooltipText = `Source: ${emb.docName} (Page ${emb.pageNum})\nText: ${snippet}`;
+
+                contentHtml += `<span class="text-[10px] bg-blue-50 text-blue-600 border border-blue-200 px-2 py-1 rounded cursor-pointer hover:bg-blue-100" 
+                    onclick="handleCitationClick(this)"
+                    data-doc="${emb.docId}" 
+                    data-page="${emb.pageNum}" 
+                    data-text="${encodeURIComponent(emb.text)}"
+                    title="${escapeHtml(tooltipText)}">
+                    [${idx+1}]
                 </span>`;
             });
             contentHtml += `</div>`;
 
             appendMessageToDOM('assistant', contentHtml);
             
-            // Save assistant message
-            chat.messages.push({ role: 'assistant', html: contentHtml });
+            const assistantMsg = chat.messages[chat.messages.length - 1];
+            assistantMsg.html = contentHtml;
+            assistantMsg.context = scoredEmbeddings; 
+            
             await saveChatToDB(chat);
 
             updateAIStatus("Ready");
         }
-
         // --- End AI Helpers ---
+
+
+
+        window.handleCitationClick = function(el) {
+            const docId = el.dataset.doc;
+            const pageNum = parseInt(el.dataset.page);
+            const text = decodeURIComponent(el.dataset.text);
+
+            if (!docId || !state.documents[docId]) return;
+
+            state.view.right.docId = docId;
+            state.view.right.pageNum = pageNum;
+            
+            renderPage('right');
+
+            setTimeout(() => {
+                highlightChunk(text, 'right');
+            }, 100);
+        };
 
         const handleScroll = debounce((side) => {
             const viewport = els[side + 'Viewport'];
@@ -3119,19 +3206,29 @@
                     }
                 }
 
-                // Load Embeddings
+                // --- RESTORED: Load Embeddings from SQLite ---
+                // We load the saved vectors to avoid regenerating them every time.
                 const embRows = db.exec("SELECT * FROM embeddings");
                 if (embRows.length > 0) {
                     const rows = embRows[0].values;
                     for (let i = 0; i < rows.length; i++) {
                         const [id, text, vecJson, dId, pNum] = rows[i];
-                        state.embeddings.push({
-                            id,
-                            text,
-                            vector: JSON.parse(vecJson),
-                            docId: dId,
-                            pageNum: pNum
-                        });
+                        
+                        // Safety check to ensure the document still exists
+                        if (state.documents[dId]) {
+                            try {
+                                const vector = JSON.parse(vecJson);
+                                state.embeddings.push({
+                                    id,
+                                    text,
+                                    vector: vector,
+                                    docId: dId,
+                                    pageNum: pNum
+                                });
+                            } catch (err) {
+                                console.error("Failed to parse embedding vector for", id, err);
+                            }
+                        }
                     }
                 }
 
@@ -3194,6 +3291,9 @@
                 if (state.view.left.docId) renderPage('left');
                 if (state.view.right.docId) renderPage('right');
                 
+                // --- SMART INDEXING ---
+                // Pass false. This will check if any documents are missing embeddings
+                // and only regenerate those. If all are loaded, it does nothing.
                 indexDocuments(false);
 
             } catch (err) {

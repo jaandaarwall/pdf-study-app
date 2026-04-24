@@ -3274,7 +3274,8 @@
                                     text,
                                     vector: vector,
                                     docId: dId,
-                                    pageNum: pNum
+                                    pageNum: pNum,
+                                    docName: state.documents[dId].name
                                 });
                             } catch (err) {
                                 console.error("Failed to parse embedding vector for", id, err);
@@ -3282,7 +3283,6 @@
                         }
                     }
                 }
-
                 // Load Chats
                 const chatRows = db.exec("SELECT * FROM chats");
                 if (chatRows.length > 0) {

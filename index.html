@@ -277,6 +277,12 @@
             background-color: #fee2e2;
             color: #dc2626;
         }
+
+        .viewport-wrapper-active {
+            box-shadow: 0 0 0 3px #3b82f6; /* Blue ring indicating active state */
+            z-index: 10; /* Brings the active panel visually forward */
+        }
+
     </style>
     <script>
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -2257,6 +2263,20 @@
             });
 
             initResizer();
+            updateViewportActiveVisuals();
+        }
+
+        function updateViewportActiveVisuals() {
+            const leftViewport = document.getElementById('left-viewport');
+            const rightViewport = document.getElementById('right-viewport');
+
+            if (state.lastActiveSide === 'left') {
+                leftViewport.classList.add('viewport-wrapper-active');
+                rightViewport.classList.remove('viewport-wrapper-active');
+            } else {
+                leftViewport.classList.remove('viewport-wrapper-active');
+                rightViewport.classList.add('viewport-wrapper-active');
+            }
         }
 
         function toggleLeftSidebar() {
@@ -2589,6 +2609,7 @@
                     }
 
                     setActiveDocument(targetSide, id);
+                    updateViewportActiveVisuals();
                     renderDocList();
                 };
                 els.docList.appendChild(item);
@@ -3596,6 +3617,7 @@
             if (!state.view[clickedSide].docId) return;
 
             state.lastActiveSide = clickedSide;
+            updateViewportActiveVisuals(); 
 
             if (state.appMode === 'linking') {
                 state.drawing.active = true;

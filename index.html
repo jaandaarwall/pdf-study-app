@@ -253,7 +253,30 @@
         body.cursor-none .pdf-canvas-container {
             cursor: none !important;
         }
-
+        /* --- Lock Button Styles --- */
+        .lock-btn {
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+            color: #9ca3af; /* Default Gray-400 */
+        }
+        .lock-btn:hover {
+            background-color: #f3f4f6;
+            color: #4b5563;
+        }
+        /* State: Locked (Red) */
+        .lock-btn.locked {
+            color: #ef4444; /* Red-500 */
+        }
+        .lock-btn.locked:hover {
+            background-color: #fee2e2;
+            color: #dc2626;
+        }
     </style>
     <script>
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -416,6 +439,13 @@
             <div id="left-panel" class="flex flex-col border-r border-gray-300 relative min-w-0 group" style="width: 50%;">
                 <div class="h-10 bg-white border-b border-gray-300 flex items-center justify-between px-4 shrink-0 z-10">
                     <div class="flex items-center gap-2">
+
+                    <!-- ADD THIS BUTTON -->
+                    <button id="lock-left-btn" onclick="toggleLock('left')" class="lock-btn" title="Lock Left Viewport">
+                        <i class="fa-solid fa-lock-open"></i>
+                    </button>
+                    <!-- ------------------ -->
+
                         <span class="text-sm font-bold text-gray-600 truncate w-24" id="left-view-title">None</span>
                         <div class="relative group/search">
                             <input type="text" id="left-search-input" placeholder="Find..." class="hidden pl-6 pr-2 py-0.5 text-[10px] border border-gray-300 rounded w-24 focus:w-32 transition-all focus:outline-none focus:ring-1 focus:ring-blue-500">
@@ -471,6 +501,14 @@
             <div id="right-panel" class="flex flex-col relative min-w-0" style="width: 50%;">
                 <div class="h-10 bg-white border-b border-gray-300 flex items-center justify-between px-4 shrink-0 z-10">
                     <div class="flex items-center gap-2">
+
+                    <!-- ADD THIS BUTTON -->
+                    <button id="lock-right-btn" onclick="toggleLock('right')" class="lock-btn" title="Lock Right Viewport">
+                        <i class="fa-solid fa-lock-open"></i>
+                    </button>
+                    <!-- ------------------ -->
+
+
                         <span class="text-sm font-bold text-gray-600 truncate w-24" id="right-view-title">None</span>
                         <div class="relative group/search">
                             <input type="text" id="right-search-input" placeholder="Find..." class="hidden pl-6 pr-2 py-0.5 text-[10px] border border-gray-300 rounded w-24 focus:w-32 transition-all focus:outline-none focus:ring-1 focus:ring-blue-500">
@@ -701,8 +739,8 @@
         const state = {
             documents: {}, 
             view: {
-                left: { docId: null, pageNum: 1, scale: 1.5, scrollTop: 0 },
-                right: { docId: null, pageNum: 1, scale: 1.5, scrollTop: 0 }
+                left: { docId: null, pageNum: 1, scale: 1.5, scrollTop: 0, locked: false }, // ADDED locked: false
+                right: { docId: null, pageNum: 1, scale: 1.5, scrollTop: 0, locked: false } // ADDED locked: false
             },
             splitRatio: 0.5,
             links: [], 
@@ -819,6 +857,49 @@
             toolHighlighter: document.getElementById('tool-highlighter'),
             // <---------------------------------->
         };
+
+        function toggleLock(side) {
+            state.view[side].locked = !state.view[side].locked;
+            
+            // Update UI Icon
+            const btn = document.getElementById(`lock-${side}-btn`);
+            const icon = btn.querySelector('i');
+            
+            if (state.view[side].locked) {
+                btn.classList.add('locked');
+                icon.classList.remove('fa-lock-open');
+                icon.classList.add('fa-lock');
+            } else {
+                btn.classList.remove('locked');
+                icon.classList.remove('fa-lock');
+                icon.classList.add('fa-lock-open');
+            }
+            
+            saveSettings();
+        }
+
+
+        function updateLockVisuals() {
+            ['left', 'right'].forEach(side => {
+                const btn = document.getElementById(`lock-${side}-btn`);
+                const icon = btn.querySelector('i');
+                
+                // Check the actual state value
+                const isLocked = state.view[side].locked;
+
+                if (isLocked) {
+                    // Apply Locked Visuals
+                    btn.classList.add('locked');
+                    icon.classList.remove('fa-lock-open');
+                    icon.classList.add('fa-lock');
+                } else {
+                    // Apply Unlocked Visuals
+                    btn.classList.remove('locked');
+                    icon.classList.remove('fa-lock');
+                    icon.classList.add('fa-lock-open');
+                }
+            });
+        }
 
         // --- Chat Management Logic ---
 
@@ -1629,22 +1710,40 @@
                     <div class="font-bold text-xs text-gray-700 truncate">${match.docName}</div>
                     <div class="text-[10px] text-blue-600">Page ${match.page}</div>
                 `;
-                div.onclick = async () => {
-                    const side = state.lastActiveSide;
-                    state.view[side].docId = match.docId;
-                    state.view[side].pageNum = match.page;
-                    state.view[side].scrollTop = 0;
-                    
-                    const input = document.getElementById(`${side}-search-input`);
-                    input.value = query;
-                    input.classList.remove('hidden');
-                    document.getElementById(`${side}-search-nav`).classList.remove('hidden');
 
-                    await performViewportSearch(side, match.page);
-                    
-                    renderPage(side);
-                    renderDocList();
-                };
+            // Inside performGlobalSearch() -> div.onclick:
+
+            div.onclick = async () => {
+                let side = state.lastActiveSide; // Start with last active
+                
+                // 1. Check if preferred side is locked
+                if (state.view[side].locked) {
+                    const otherSide = side === 'left' ? 'right' : 'left';
+                    // Try to switch to the other side if it's not locked
+                    if (!state.view[otherSide].locked) {
+                        side = otherSide;
+                    } else {
+                        // Both locked
+                        showModal("Viewport Locked", "Cannot navigate: Both viewports are locked.");
+                        return;
+                    }
+                }
+
+                // Proceed with opening the document in the unlocked 'side'
+                state.view[side].docId = match.docId;
+                state.view[side].pageNum = match.page;
+                state.view[side].scrollTop = 0;
+                
+                const input = document.getElementById(`${side}-search-input`);
+                input.value = query;
+                input.classList.remove('hidden');
+                document.getElementById(`${side}-search-nav`).classList.remove('hidden');
+
+                await performViewportSearch(side, match.page);
+                
+                renderPage(side);
+                renderDocList();
+            };
                 container.appendChild(div);
             });
         }
@@ -2015,13 +2114,45 @@
 
                     if (savedData.settings) {
                         const sView = savedData.settings.view;
+                        
+                        // Safety check for locked property if loading old project file
+                        if (sView.left && sView.left.locked === undefined) sView.left.locked = false;
+                        if (sView.right && sView.right.locked === undefined) sView.right.locked = false;
+
+                        // --- Handle Left View ---
                         if (sView.left.docId && state.documents[sView.left.docId]) {
                             state.view.left = { ...sView.left, scrollTop: sView.left.scrollTop || 0 };
-                            if(state.view.left.docId) state.lastActiveSide = 'left';
+                            if (state.view.left.docId) state.lastActiveSide = 'left';
                         }
+                        
+                        // Update Left Lock UI
+                        const leftBtn = document.getElementById('lock-left-btn');
+                        const leftIcon = leftBtn ? leftBtn.querySelector('i') : null;
+                        if (state.view.left.locked) {
+                            if(leftBtn) leftBtn.classList.add('locked');
+                            if(leftIcon) {
+                                leftIcon.classList.remove('fa-lock-open');
+                                leftIcon.classList.add('fa-lock');
+                            }
+                        }
+
+                        // --- Handle Right View ---
                         if (sView.right.docId && state.documents[sView.right.docId]) {
                             state.view.right = { ...sView.right, scrollTop: sView.right.scrollTop || 0 };
                         }
+
+                        // Update Right Lock UI
+                        const rightBtn = document.getElementById('lock-right-btn');
+                        const rightIcon = rightBtn ? rightBtn.querySelector('i') : null;
+                        if (state.view.right.locked) {
+                            if(rightBtn) rightBtn.classList.add('locked');
+                            if(rightIcon) {
+                                rightIcon.classList.remove('fa-lock-open');
+                                rightIcon.classList.add('fa-lock');
+                            }
+                        }
+
+                        // --- Handle Other Settings (Split Ratio, Modes, etc.) ---
                         if (savedData.settings.splitRatio) {
                             state.splitRatio = savedData.settings.splitRatio;
                             els.leftPanel.style.width = (state.splitRatio * 100) + '%';
@@ -2044,7 +2175,6 @@
                             document.body.classList.add('ai-sidebar-collapsed');
                         }
                     }
-
                     renderDocList();
                     renderChatList();
                     renderChatMessages();
@@ -2052,6 +2182,7 @@
                     updateZoomIndicator('right');
                     if (state.view.left.docId) renderPage('left');
                     if (state.view.right.docId) renderPage('right');
+                     updateLockVisuals(); 
                 } else {
                      // Initial setup for new users
                     await createNewChat();
@@ -2432,12 +2563,32 @@
 
                 item.onclick = (e) => {
                     if(e.target.tagName === 'INPUT') return;
-                    if (isActiveLeft) setActiveDocument('right', id);
-                    else if (isActiveRight) setActiveDocument('left', id);
+                    
+                    let targetSide = null;
+                    
+                    // 1. Determine Preferred Side based on current active state
+                    if (isActiveLeft) targetSide = 'right';
+                    else if (isActiveRight) targetSide = 'left';
                     else {
-                        if (!state.view.left.docId) setActiveDocument('left', id);
-                        else setActiveDocument('right', id);
+                        if (!state.view.left.docId) targetSide = 'left';
+                        else targetSide = 'right';
                     }
+
+                    // 2. Apply Lock Logic
+                    if (state.view[targetSide].locked) {
+                        const otherSide = targetSide === 'left' ? 'right' : 'left';
+                        
+                        // If the preferred side is locked, try to use the OTHER side
+                        if (!state.view[otherSide].locked) {
+                            targetSide = otherSide;
+                        } else {
+                            // Both sides are locked
+                            showModal("Viewport Locked", "Cannot open document: Both viewports are locked.");
+                            return;
+                        }
+                    }
+
+                    setActiveDocument(targetSide, id);
                     renderDocList();
                 };
                 els.docList.appendChild(item);
@@ -3329,6 +3480,7 @@
                     else document.body.classList.remove('ai-sidebar-collapsed');
 
                     saveSettings(); 
+                    updateLockVisuals(); 
                 }
 
                 state.projectFileHandle = null;
